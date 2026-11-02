@@ -77,9 +77,24 @@ def parse_entry(path: Path) -> dict | None:
     name = re.search(r"^name:\s*(.+)$", fm, re.M)
     desc = re.search(r"^description:\s*(.+)$", fm, re.M)
     typ = re.search(r"^\s*type:\s*(\w+)", fm, re.M)
+    created = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", fm, re.M)
+    body_created = re.search(r"记录于 (\d{4}-\d{2}-\d{2})", body)
     return {"file": path, "name": (name.group(1).strip() if name else path.stem),
             "description": (desc.group(1).strip() if desc else ""),
-            "type": (typ.group(1) if typ else ""), "body": body.strip(), "mtime": path.stat().st_mtime}
+            "type": (typ.group(1) if typ else ""),
+            "created": (created.group(1) if created else body_created.group(1) if body_created else ""),
+            "body": body.strip(), "mtime": path.stat().st_mtime}
+
+
+def write_entry(root: Path, name: str, mtype: str, description: str, body: str,
+                created: str | None = None) -> Path:
+    """统一写入格式：save 与 memory_edit 共用，保证 frontmatter 结构一致。"""
+    today = datetime.date.today().isoformat()
+    text = (f"---\nname: {name}\ndescription: {description}\n"
+            f"metadata:\n  type: {mtype}\ncreated: {created or today}\n---\n\n{body.rstrip()}\n")
+    path = frontmatter_path(root, name)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def entries(root: Path) -> list[dict]:
@@ -117,15 +132,38 @@ def save(text: str, mtype: str = "project", scope: str = "global",
         raise ValueError(f"记忆根被同名文件占据（引擎无法读取）：{root}；请先移走该文件")
     root.mkdir(parents=True, exist_ok=True)
     nm = name or slugify(text)
-    path = frontmatter_path(root, nm)
     today = datetime.date.today().isoformat()
     desc = description or text.strip().replace("\n", " ")[:100]
-    body = text.strip() if mtype in ("user", "reference") else f"{text.strip()}\n\n**Why:** {desc}\n**How to apply:** 记录于 {today}"
-    path.write_text(
-        f"---\nname: {nm}\ndescription: {desc}\nmetadata:\n  type: {mtype}\n---\n\n{body}\n",
-        encoding="utf-8")
+    if mtype in ("user", "reference"):
+        body = text.strip()
+    else:
+        body = f"{text.strip()}\n\n**Why:** {desc}\n**How to apply:** 记录于 {today}"
+    write_entry(root, nm, mtype, desc, body, created=today)
     index_update(root, nm, desc.split("。")[0][:40], today)
-    return {"name": nm, "path": str(path), "scope": scope}
+    return {"name": nm, "path": str(frontmatter_path(root, nm)), "scope": scope}
+
+
+def edit(name: str, text: str | None = None, description: str | None = None,
+         mtype: str | None = None, scope: str = "global",
+         workspace_path: str | None = None) -> dict:
+    """更新既有记忆：只改给定的字段，保留创建日期与 slug。"""
+    root = resolve_root(scope, workspace_path)
+    found = [e for e in entries(root) if e["name"].startswith(name)]
+    if not found:
+        raise ValueError(f"未找到: {name}")
+    e = found[0]
+    new_type = mtype if mtype in TYPES else (e["type"] or "project")
+    new_desc = description if description is not None else e["description"]
+    if text is not None:
+        new_body = text.strip()
+    else:
+        # 去掉旧的 Why/How 尾巴，保持正文干净再按类型补
+        base = re.sub(r"\n\n\*\*Why:\*\*[\s\S]*$", "", e["body"])
+        new_body = base if new_type in ("user", "reference") else \
+            f"{base}\n\n**Why:** {new_desc}\n**How to apply:** 记录于 {e.get('created') or datetime.date.today().isoformat()}"
+    write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"))
+    index_update(root, e["name"], new_desc.split("。")[0][:40], e.get("created") or "")
+    return {"name": e["name"], "scope": scope, "description": new_desc}
 
 
 def search(query: str, scope: str = "all", workspace_path: str | None = None, limit: int = 20) -> list[dict]:
@@ -216,6 +254,12 @@ TOOLS = [
          "required": []}},
     {"name": "memory_get", "description": "按 name 读取单条记忆全文",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "memory_edit", "description": "更新既有记忆的正文/描述/类型（保留 slug 与创建日期）",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "text": {"type": "string"},
+         "description": {"type": "string"}, "type": {"type": "string", "enum": list(TYPES)},
+         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
+         "required": ["name"]}},
     {"name": "memory_pin", "description": "置顶/取消置顶记忆（pin 过的每会话确定性注入）",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string"}, "on": {"type": "boolean", "default": True},
@@ -238,7 +282,7 @@ def _is_pinned(name: str, scope: str) -> bool:
 
 def _items_json(items: list[dict]) -> str:
     return json.dumps([{"name": e["name"], "description": e["description"], "type": e["type"],
-                        "scope": e["scope"], "body": e["body"],
+                        "scope": e["scope"], "body": e["body"], "created": e.get("created", ""),
                         "pinned": _is_pinned(e["name"], e["scope"])} for e in items],
                        ensure_ascii=True)
 
@@ -293,6 +337,10 @@ def _mcp_dispatch(method: str, params: dict):
             if not found:
                 raise ValueError(f"未找到: {args['name']}")
             return {"content": [{"type": "text", "text": found[0]["body"]}]}
+        if name == "memory_edit":
+            r = edit(args["name"], args.get("text"), args.get("description"),
+                     args.get("type"), args.get("scope", "global"))
+            return {"content": [{"type": "text", "text": f"已更新 {r['name']} ({r['scope']})"}]}
         if name == "memory_pin":
             set_pin(args["name"], args.get("on", True), args.get("scope", "global"))
             return {"content": [{"type": "text",
