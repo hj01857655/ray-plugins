@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.js\"",
+        "timeoutMs": 10000
+      }
+    ]
+  }
+}

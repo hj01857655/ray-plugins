@@ -1,0 +1,27 @@
+{
+  "name": "memory-bank",
+  "version": "0.3.1",
+  "description": "Bridge to ZCode's built-in file-based memory: MCP tools and commands write frontmatter memory files into the native memories/ store (auto-extraction, semantic recall and dream consolidation apply), plus pin registry and SessionStart hook for deterministic injection.",
+  "author": {
+    "name": "Ray"
+  },
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills",
+  "commands": "./commands",
+  "mcpServers": {
+    "memory-bank": {
+      "command": "python",
+      "args": [
+        "-I",
+        "${CLAUDE_PLUGIN_ROOT}/scripts/memory_bank.py",
+        "--mcp"
+      ],
+      "env": {
+        "ZCODE_PLUGIN_ID": "memory-bank"
+      }
+    }
+  },
+  "description_i18n": {
+    "zh-CN": "对接 ZCode 原生记忆系统的 Memory Bank：MCP/命令按原生格式写入 memories 目录（自动抽取、语义召回、dream 整理全部生效），pin 注册表 + SessionStart hook 确定性注入。"
+  }
+}
