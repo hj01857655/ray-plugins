@@ -205,13 +205,42 @@ TOOLS = [
          "text": {"type": "string"}, "type": {"type": "string", "enum": list(TYPES), "default": "project"},
          "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
          "required": ["text"]}},
-    {"name": "memory_search", "description": "检索内置记忆文件（空关键词=列出全部）",
+    {"name": "memory_search", "description": "按关键词检索内置记忆（空关键词=列出全部）",
      "inputSchema": {"type": "object", "properties": {
          "query": {"type": "string"}, "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
          "required": []}},
+    {"name": "memory_list", "description": "列出记忆（结构化 JSON，含正文与 pin 状态；Memory Bank 面板数据源）",
+     "inputSchema": {"type": "object", "properties": {
+         "query": {"type": "string", "default": ""},
+         "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
+         "required": []}},
+    {"name": "memory_get", "description": "按 name 读取单条记忆全文",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "memory_pin", "description": "置顶/取消置顶记忆（pin 过的每会话确定性注入）",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "on": {"type": "boolean", "default": True},
+         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
+         "required": ["name"]}},
     {"name": "memory_forget", "description": "按 name 前缀删除记忆文件（移入 trash，可回溯）",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
 ]
+
+# ui.surfaces 面板资源：宿主经 resources/read 取 ui://memory-bank/panel.html 渲染进沙箱 webview
+PANEL_URI = "ui://memory-bank/panel.html"
+PANEL_FILE = Path(__file__).resolve().parent.parent / "ui" / "panel.html"
+
+
+def _is_pinned(name: str, scope: str) -> bool:
+    root = str(resolve_root("global" if scope == "global" else "project",
+                            os.environ.get("ZCODE_PROJECT_DIR")))
+    return bool(load_pins().get(root, {}).get(name))
+
+
+def _items_json(items: list[dict]) -> str:
+    return json.dumps([{"name": e["name"], "description": e["description"], "type": e["type"],
+                        "scope": e["scope"], "body": e["body"],
+                        "pinned": _is_pinned(e["name"], e["scope"])} for e in items],
+                       ensure_ascii=True)
 
 
 def handle_mcp() -> None:
@@ -236,8 +265,16 @@ def handle_mcp() -> None:
 
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
-        return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.3.1"}}
+        return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
+                "serverInfo": {"name": "memory-bank", "version": "0.4.0"}}
+    if method == "resources/list":
+        return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
+                               "mimeType": "text/html"}]}
+    if method == "resources/read":
+        if params.get("uri") != PANEL_URI:
+            raise ValueError(f"unknown resource: {params.get('uri')}")
+        return {"contents": [{"uri": PANEL_URI, "mimeType": "text/html",
+                              "text": PANEL_FILE.read_text(encoding="utf-8")}]}
     if method == "tools/list":
         return {"tools": TOOLS}
     if method == "tools/call":
@@ -248,6 +285,18 @@ def _mcp_dispatch(method: str, params: dict):
         if name == "memory_search":
             items = search(args.get("query", ""), args.get("scope", "all"))
             return {"content": [{"type": "text", "text": render(items)}]}
+        if name == "memory_list":
+            items = search(args.get("query", ""), args.get("scope", "all"), limit=100)
+            return {"content": [{"type": "text", "text": _items_json(items)}]}
+        if name == "memory_get":
+            found = search(args["name"], "all", limit=1)
+            if not found:
+                raise ValueError(f"未找到: {args['name']}")
+            return {"content": [{"type": "text", "text": found[0]["body"]}]}
+        if name == "memory_pin":
+            set_pin(args["name"], args.get("on", True), args.get("scope", "global"))
+            return {"content": [{"type": "text",
+                                 "text": f"{'pinned' if args.get('on', True) else 'unpinned'} {args['name']}"}]}
         if name == "memory_forget":
             gone = forget(args["name"])
             return {"content": [{"type": "text", "text": f"已删除 {len(gone)}: {', '.join(gone)}" if gone else "未找到"}]}

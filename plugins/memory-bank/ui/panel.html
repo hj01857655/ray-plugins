@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Memory Bank</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.5 system-ui, sans-serif; padding: 12px; }
+  header { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  header h1 { font-size: 14px; margin: 0 auto 0 0; }
+  input[type=search] { flex: 1; padding: 6px 8px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; }
+  button { padding: 5px 9px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+  button:hover { background: #8882; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .card .head { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .card .name { font-weight: 600; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid #8884; color: #888; }
+  .card .desc { color: #888; margin-top: 2px; }
+  .card pre { white-space: pre-wrap; word-break: break-word; background: #8881; border-radius: 6px; padding: 8px; margin: 8px 0 6px; }
+  .ops { display: flex; gap: 6px; }
+  .status { color: #888; padding: 20px; text-align: center; }
+  .err { color: #c0392b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧠 Memory Bank</h1>
+  <input id="q" type="search" placeholder="搜索记忆…" />
+  <button id="refresh">刷新</button>
+</header>
+<div id="list"><div class="status">连接中…</div></div>
+<script>
+'use strict';
+// Memory Bank 面板：ext-apps 2.0 页面端最小实现。
+// 握手：ui/initialize (protocolVersion 2026-01-26) → ui/notifications/initialized；
+// 之后 tools/call 经宿主代理到插件 MCP server（memory_list / memory_pin / memory_forget）。
+const PROTOCOL_VERSION = '2026-01-26';
+const pending = new Map();   // id -> {resolve, reject}
+let nextId = 1;
+
+function post(msg) { window.parent.postMessage(msg, '*'); }
+function notify(method, params) { post({ jsonrpc: '2.0', method, params }); }
+function call(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    post({ jsonrpc: '2.0', id, method, params });
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(method + ' timeout')); } }, 15000);
+  });
+}
+const tool = (name, args) => call('tools/call', { name, arguments: args })
+  .then((r) => {
+    if (r.isError) throw new Error((r.content || []).map((c) => c.text).join('\n'));
+    return (r.content || []).map((c) => c.text).join('\n');
+  });
+
+window.addEventListener('message', (ev) => {
+  if (ev.source !== window.parent) return;          // 只认宿主
+  const msg = ev.data;
+  if (!msg || msg.jsonrpc !== '2.0') return;
+  if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+    const p = pending.get(msg.id);
+    if (p) { pending.delete(msg.id); msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result); }
+    return;
+  }
+  if (msg.method !== undefined) {                   // 宿主请求：未实现的方法按 JSON-RPC 回错
+    post({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'not implemented: ' + msg.method } });
+  }
+});
+
+async function connect() {
+  const res = await call('ui/initialize', {
+    appInfo: { name: 'Memory Bank', version: '0.4.0' },
+    appCapabilities: {},
+    protocolVersion: PROTOCOL_VERSION,
+  });
+  notify('ui/notifications/initialized');
+  return res;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+async function refresh(qText) {
+  const list = document.getElementById('list');
+  list.innerHTML = '<div class="status">加载中…</div>';
+  try {
+    const out = await tool('memory_list', { query: qText || '' });
+    const items = JSON.parse(out);
+    if (!items.length) { list.innerHTML = '<div class="status">（暂无记忆）</div>'; return; }
+    list.innerHTML = '';
+    for (const it of items) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML =
+        '<div class="head"><span class="name">' + esc(it.name) + '</span>' +
+        (it.pinned ? '<span title="已 pin">📌</span>' : '') +
+        '<span class="badge">' + esc(it.type || '?') + '</span>' +
+        '<span class="badge">' + esc(it.scope) + '</span></div>' +
+        '<div class="desc">' + esc(it.description) + '</div>' +
+        '<pre style="display:none">' + esc(it.body) + '</pre>' +
+        '<div class="ops" style="margin-top:6px">' +
+        '<button data-op="pin">' + (it.pinned ? '取消 pin' : 'Pin') + '</button>' +
+        '<button data-op="forget">删除</button></div>';
+      card.querySelector('.head').onclick = () => {
+        const pre = card.querySelector('pre');
+        pre.style.display = pre.style.display === 'none' ? 'block' : 'none';
+      };
+      card.querySelector('[data-op=pin]').onclick = async (e) => {
+        e.stopPropagation();
+        try { await tool('memory_pin', { name: it.name, on: !it.pinned, scope: it.scope === 'global' ? 'global' : 'project' }); refresh(qText); }
+        catch (err) { alert('pin 失败: ' + err.message); }
+      };
+      card.querySelector('[data-op=forget]').onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm('删除记忆 ' + it.name + '？（移入 trash，可回溯）')) return;
+        try { await tool('memory_forget', { name: it.name, scope: it.scope === 'global' ? 'global' : 'project' }); refresh(qText); }
+        catch (err) { alert('删除失败: ' + err.message); }
+      };
+      list.appendChild(card);
+    }
+  } catch (err) {
+    list.innerHTML = '<div class="status err">加载失败: ' + esc(err.message) + '</div>';
+  }
+}
+
+let debounce;
+document.getElementById('q').addEventListener('input', (e) => {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => refresh(e.target.value.trim()), 300);
+});
+document.getElementById('refresh').onclick = () => refresh(document.getElementById('q').value.trim());
+
+connect().then(() => refresh('')).catch((err) => {
+  document.getElementById('list').innerHTML =
+    '<div class="status err">握手失败: ' + esc(err.message) + '<br/>请确认插件 MCP server 已连接并重启过 ZCode。</div>';
+});
+</script>
+</body>
+</html>
