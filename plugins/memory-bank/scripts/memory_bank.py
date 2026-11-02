@@ -244,9 +244,9 @@ def _items_json(items: list[dict]) -> str:
 
 
 def handle_mcp() -> None:
-    data = sys.stdin.buffer.read().decode("utf-8", "replace")
-    for raw in data.splitlines():
-        raw = raw.strip()
+    # stdio 常开：必须逐行即时处理，不能 read() 到 EOF（宿主不关管道，读到 EOF=30s 超时假死）
+    for raw in sys.stdin.buffer:
+        raw = raw.decode("utf-8", "replace").strip()
         if not raw:
             continue
         try:
