@@ -112,3 +112,35 @@ button.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transpar
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 #toast.err { background: var(--danger); color: #fff; }
+
+/* ── 热度与关联（v0.9） ── */
+.heat { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+  background: color-mix(in srgb, var(--feedback) 18%, transparent); color: var(--feedback); }
+.related { margin-top: 4px; display: flex; gap: 5px; flex-wrap: wrap; }
+.chip { font-size: 11px; padding: 1px 8px; border-radius: 999px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--reference) 40%, transparent);
+  background: color-mix(in srgb, var(--reference) 10%, transparent); color: var(--reference); }
+.chip:hover { filter: brightness(1.15); }
+
+/* ── 版本史 ── */
+.histview { margin-top: 6px; }
+.hist-title { font-size: 12px; color: var(--sub); margin: 4px 0; }
+.hist-item { margin: 6px 0; }
+.hist-head { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--sub); margin-bottom: 3px; }
+.hist-item pre { max-height: 160px; overflow: auto; margin: 0; }
+
+/* ── 洞察视图 ── */
+#insightview { margin: 0 14px; }
+#insightview .status { padding: 10px 4px; }
+.i-sec { margin: 10px 0; }
+.i-sec h3 { font-size: 12.5px; margin: 0 0 6px; color: var(--sub); font-weight: 600; }
+.i-bar { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.i-bar .lbl { width: 84px; font-size: 11.5px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.i-bar .track { flex: 1; height: 10px; border-radius: 5px; background: color-mix(in srgb, var(--sub) 12%, transparent); overflow: hidden; }
+.i-bar .fill { display: block; height: 100%; border-radius: 5px; background: var(--accent); min-width: 2px; }
+.i-bar .num { font-size: 11px; color: var(--sub); min-width: 26px; }
+.i-row { display: flex; align-items: center; gap: 7px; padding: 4px 2px; font-size: 12.5px; border-bottom: 1px dashed var(--line); }
+.i-row:last-child { border-bottom: none; }
+.i-row .name { font-weight: 600; cursor: pointer; word-break: break-all; }
+.i-row .name:hover { color: var(--accent); }
+.i-row button { padding: 2px 9px; font-size: 11.5px; }

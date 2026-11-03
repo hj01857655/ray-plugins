@@ -30,6 +30,8 @@ MEMORIES = STORAGE_ROOT / "memories"
 REG_DIR = Path.home() / ".zcode" / "memory-bank"                # memory-bank 自有注册数据（在记忆根之外）
 PINS = REG_DIR / "pins.json"
 TRASH = REG_DIR / "trash"
+HISTORY = REG_DIR / "history"                                   # 编辑版本史：history/<name>.md 按时间头追加
+LINK_RE = re.compile(r"\[\[([a-z0-9][a-z0-9.-]{0,47})\]\]")      # 正文 [[slug]] 实体链
 SECRET_RE = re.compile(r"(sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{20,}|[A-Fa-f0-9]{32,})")
 PROTOCOL = "2024-11-05"
 TYPES = ("user", "feedback", "project", "reference")
@@ -80,22 +82,34 @@ def parse_entry(path: Path) -> dict | None:
     created = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", fm, re.M)
     tags = re.search(r"^tags:\s*\[([^\]]*)\]", fm, re.M)
     body_created = re.search(r"记录于 (\d{4}-\d{2}-\d{2})", body)
+    hits_m = re.search(r"^hits:\s*(\d+)", fm, re.M)
+    last_hit_m = re.search(r"^last_hit:\s*(\d{4}-\d{2}-\d{2})", fm, re.M)
+    related_m = re.search(r"^related:\s*\[([^\]]*)\]", fm, re.M)
     return {"file": path, "name": (name.group(1).strip() if name else path.stem),
             "description": (desc.group(1).strip() if desc else ""),
             "type": (typ.group(1) if typ else ""),
             "created": (created.group(1) if created else body_created.group(1) if body_created else ""),
             "tags": [x.strip().strip("'\"") for x in tags.group(1).split(",") if x.strip()] if tags else [],
+            "hits": int(hits_m.group(1)) if hits_m else 0,
+            "last_hit": last_hit_m.group(1) if last_hit_m else "",
+            "related": [x.strip() for x in related_m.group(1).split(",") if x.strip()] if related_m else [],
+            "links": sorted(set(LINK_RE.findall(body.lower()))),
             "body": body.strip(), "mtime": path.stat().st_mtime}
 
 
 def write_entry(root: Path, name: str, mtype: str, description: str, body: str,
-                created: str | None = None, tags: list[str] | None = None) -> Path:
+                created: str | None = None, tags: list[str] | None = None,
+                hits: int | None = None, last_hit: str | None = None,
+                related: list[str] | None = None) -> Path:
     """统一写入格式：save 与 memory_edit 共用，保证 frontmatter 结构一致。"""
     today = datetime.date.today().isoformat()
     desc = " ".join(description.split())   # 描述必须单行，否则 frontmatter 结构被弄破
     tag_line = ("tags: [" + ", ".join(tags) + "]\n") if tags else ""
+    heat_line = (f"hits: {hits}\n" if hits else "") + (f"last_hit: {last_hit}\n" if last_hit else "")
+    rel_line = ("related: [" + ", ".join(related) + "]\n") if related else ""
     text = (f"---\nname: {name}\ndescription: {desc}\n"
-            f"{tag_line}metadata:\n  type: {mtype}\ncreated: {created or today}\n---\n\n{body.rstrip()}\n")
+            f"{tag_line}metadata:\n  type: {mtype}\ncreated: {created or today}\n"
+            f"{heat_line}{rel_line}---\n\n{body.rstrip()}\n")
     path = frontmatter_path(root, name)
     path.write_text(text, encoding="utf-8")
     return path
@@ -147,6 +161,27 @@ def save(text: str, mtype: str = "project", scope: str = "global",
     return {"name": nm, "path": str(frontmatter_path(root, nm)), "scope": scope}
 
 
+def _history_append(name: str, old: dict) -> None:
+    """Zep 式不丢旧事实：改版前把旧全文按时间头追加进 history/<name>.md（记忆根之外，不会被扫到）。"""
+    HISTORY.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    with (HISTORY / f"{name}.md").open("a", encoding="utf-8") as f:
+        f.write(f"\n\n## {stamp}\n\n{old['body'].rstrip()}\n")
+
+
+def history_versions(name: str, scope: str = "global", workspace_path: str | None = None) -> list[dict]:
+    """memory_history 数据源：解析 history/<name>.md 的 ## 时间头，旧→新返回。"""
+    root = resolve_root(scope, workspace_path)
+    found = [e for e in entries(root) if e["name"].startswith(name)]
+    if not found:
+        return []
+    hist = HISTORY / f"{found[0]['name']}.md"
+    if not hist.exists():
+        return []
+    parts = re.split(r"\n## (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\n", hist.read_text(encoding="utf-8"))
+    return [{"saved_at": parts[i], "body": parts[i + 1].strip()} for i in range(1, len(parts) - 1, 2)]
+
+
 def edit(name: str, text: str | None = None, description: str | None = None,
          mtype: str | None = None, tags: list[str] | None = None, scope: str = "global",
          workspace_path: str | None = None) -> dict:
@@ -167,7 +202,10 @@ def edit(name: str, text: str | None = None, description: str | None = None,
             f"{base}\n\n**Why:** {new_desc}\n**How to apply:** 记录于 {e.get('created') or datetime.date.today().isoformat()}"
     # tags 传入即替换（面板编辑把删掉的 tag 从列表里去掉，合并语义会让删除失效）
     new_tags = sorted(set(tags or [])) if tags is not None else e.get("tags")
-    write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"), tags=new_tags)
+    if text is not None or description is not None:
+        _history_append(e["name"], e)   # 只在内容真变了才归档旧版，type/tags 微调不算
+    write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"), tags=new_tags,
+                hits=e.get("hits"), last_hit=e.get("last_hit"), related=e.get("related"))
     index_update(root, e["name"], new_desc.split("。")[0][:40], e.get("created") or "")
     return {"name": e["name"], "scope": scope, "description": new_desc}
 
@@ -190,6 +228,54 @@ def search(query: str, scope: str = "all", workspace_path: str | None = None, li
                 continue
             hits.append(e | {"scope": s})
     return hits[:limit]
+
+
+def touch(root: Path, name: str) -> None:
+    """命中计数：memory_get/memory_recall 每次命中 hits+1、last_hit 记当天，供加权召回。"""
+    e = next((x for x in entries(root) if x["name"].startswith(name)), None)
+    if not e:
+        return
+    write_entry(root, e["name"], e["type"] or "project", e["description"], e["body"],
+                created=e.get("created"), tags=e.get("tags"),
+                hits=e.get("hits", 0) + 1, last_hit=datetime.date.today().isoformat(),
+                related=e.get("related"))
+
+
+def recall(query: str, scope: str = "all", workspace_path: str | None = None, k: int = 5) -> list[dict]:
+    """加权召回：pin 置顶 ≫ 热度 ≫ 新近度 ≫ 标题命中；Agent 找上下文的入口。"""
+    items = search(query, scope, workspace_path, limit=500)
+    pins = load_pins()
+    proj = str(resolve_root("project", workspace_path or os.environ.get("ZCODE_PROJECT_DIR")))
+    glob = str(resolve_root("global", None))
+    today = datetime.date.today()
+    for e in items:
+        age = 30
+        if e.get("created"):
+            try:
+                age = (today - datetime.date.fromisoformat(e["created"][:10])).days
+            except ValueError:
+                pass
+        pinned = bool(pins.get(proj if e["scope"] != "global" else glob, {}).get(e["name"]))
+        e["score"] = ((1000 if pinned else 0) + e.get("hits", 0) * 5
+                      + max(0, 30 - min(age, 30)) + (3 if query.lower() in e["name"].lower() else 0))
+    items.sort(key=lambda x: x["score"], reverse=True)
+    return items[:k]
+
+
+def link(name: str, related: list[str], scope: str = "global",
+         workspace_path: str | None = None) -> list[str]:
+    """写 related frontmatter 字段：related 名按前缀归一到本根已存在的 slug。"""
+    root = resolve_root(scope, workspace_path)
+    found = [e for e in entries(root) if e["name"].startswith(name)]
+    if not found:
+        raise ValueError(f"未找到: {name}")
+    e = found[0]
+    names = {x["name"] for x in entries(root)}
+    rel = sorted({n if n in names else next((m for m in names if m.startswith(n)), n) for n in related})
+    write_entry(root, e["name"], e["type"] or "project", e["description"], e["body"],
+                created=e.get("created"), tags=e.get("tags"), hits=e.get("hits"),
+                last_hit=e.get("last_hit"), related=rel)
+    return rel
 
 
 def forget(name: str, scope: str = "all", workspace_path: str | None = None) -> list[str]:
@@ -284,10 +370,29 @@ def set_pin(name: str, on: bool, scope: str = "global", workspace_path: str | No
 
 
 def stats() -> dict:
-    g = len(entries(resolve_root("global", None)))
-    p = len(entries(resolve_root("project", os.environ.get("ZCODE_PROJECT_DIR") or os.getcwd())))
-    pins = sum(len(v) for v in load_pins().values())
-    return {"global": g, "project": p, "pinned": pins}
+    """全景统计：类型分布 / 近30天逐日写入 / top hits / 90天零命中候选（面板洞察视图数据源）。"""
+    roots = {"global": resolve_root("global", None),
+             "project": resolve_root("project", os.environ.get("ZCODE_PROJECT_DIR") or os.getcwd())}
+    today = datetime.date.today()
+    by_type, per_day, top_hits, stale = {}, {}, [], []
+    for scope, root in roots.items():
+        for e in entries(root):
+            t = e["type"] or "?"
+            by_type[t] = by_type.get(t, 0) + 1
+            day = (e.get("created") or "")[:10]
+            if day:
+                per_day[day] = per_day.get(day, 0) + 1
+            if e.get("hits"):
+                top_hits.append({"name": e["name"], "hits": e["hits"], "scope": scope,
+                                 "last_hit": e.get("last_hit", "")})
+            elif day and (today - datetime.date.fromisoformat(day)).days > 90:
+                stale.append({"name": e["name"], "scope": scope, "created": day,
+                              "description": e["description"][:60]})
+    return {"total": sum(by_type.values()), "by_type": by_type,
+            "per_day": {d: per_day[d] for d in sorted(per_day)[-30:]},
+            "top_hits": sorted(top_hits, key=lambda x: x["hits"], reverse=True)[:8],
+            "stale": stale[:10], "pinned": sum(len(v) for v in load_pins().values()),
+            "global": len(entries(roots["global"])), "project": len(entries(roots["project"]))}
 
 
 def render(items: list[dict]) -> str:
@@ -318,7 +423,7 @@ TOOLS = [
          "query": {"type": "string", "default": ""}, "tag": {"type": "string"},
          "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
          "required": []}},
-    {"name": "memory_get", "description": "按 name 读取单条记忆全文",
+    {"name": "memory_get", "description": "按 name 读取单条记忆全文（计入 hits 热度）",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
     {"name": "memory_edit", "description": "更新既有记忆的正文/描述/类型/标签（保留 slug 与创建日期；tags 传入即整体替换）",
      "inputSchema": {"type": "object", "properties": {
@@ -338,6 +443,20 @@ TOOLS = [
          "required": ["name"]}},
     {"name": "memory_forget", "description": "按 name 前缀删除记忆文件（移入 trash，可回溯）",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "memory_recall", "description": "加权召回：pin ≫ 热度 ≫ 新近度；返回 top-k（含命中计数），Agent 找上下文用这个而不是 memory_search",
+     "inputSchema": {"type": "object", "properties": {
+         "query": {"type": "string"}, "k": {"type": "integer", "default": 5},
+         "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
+         "required": ["query"]}},
+    {"name": "memory_history", "description": "查看记忆的编辑版本史（每次改版前旧全文自动归档）",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+    {"name": "memory_link", "description": "维护记忆间关联（related frontmatter 字段；正文 [[slug]] 亦会被解析为 links）",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "related": {"type": "array", "items": {"type": "string"}},
+         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
+         "required": ["name", "related"]}},
+    {"name": "memory_stats", "description": "全景统计：类型分布/近30天写入/top hits/90天零命中候选",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
 ]
 
 # ui.surfaces 面板资源：宿主经 resources/read 取 ui://memory-bank/panel.html 渲染进沙箱 webview。
@@ -366,7 +485,9 @@ def _items_json(items: list[dict]) -> str:
 
     return json.dumps([{"name": e["name"], "description": e["description"], "type": e["type"],
                         "scope": e["scope"], "body": e["body"], "created": e.get("created", ""),
-                        "tags": e.get("tags", []),
+                        "tags": e.get("tags", []), "hits": e.get("hits", 0),
+                        "last_hit": e.get("last_hit", ""), "related": e.get("related", []),
+                        "links": e.get("links", []),
                         "pinned": pinned(e["name"], e["scope"])} for e in items],
                        ensure_ascii=True)
 
@@ -394,7 +515,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.8.0"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.9.0"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
@@ -421,7 +542,9 @@ def _mcp_dispatch(method: str, params: dict):
             found = [e for e in search("", "all", limit=500) if e["name"].startswith(args["name"])]
             if not found:
                 raise ValueError(f"未找到: {args['name']}")
-            return {"content": [{"type": "text", "text": found[0]["body"]}]}
+            hit = found[0]
+            touch(resolve_root("project" if hit["scope"] != "global" else "global", None), hit["name"])
+            return {"content": [{"type": "text", "text": hit["body"]}]}
         if name == "memory_edit":
             r = edit(args["name"], args.get("text"), args.get("description"),
                      args.get("type"), args.get("tags"), args.get("scope", "global"))
@@ -436,8 +559,21 @@ def _mcp_dispatch(method: str, params: dict):
             done = restore(args["name"])
             return {"content": [{"type": "text", "text": f"已恢复 {len(done)}: {', '.join(done)}" if done else "未找到可恢复条目"}]}
         if name == "memory_forget":
-            gone = forget(args["name"])
+            gone = forget(args["name"], args.get("scope", "all"))
             return {"content": [{"type": "text", "text": f"已删除 {len(gone)}: {', '.join(gone)}" if gone else "未找到"}]}
+        if name == "memory_recall":
+            items = recall(args.get("query", ""), args.get("scope", "all"), k=args.get("k", 5))
+            out = "\n".join(f"{e['name']}  [{e['type'] or '?'}] ({e['scope']}) score={e['score']} "
+                            f"hits={e.get('hits', 0)}  {e['description']}" for e in items)
+            return {"content": [{"type": "text", "text": out or "（无命中）"}]}
+        if name == "memory_history":
+            vers = history_versions(args["name"], args.get("scope", "global"))
+            return {"content": [{"type": "text", "text": json.dumps(vers, ensure_ascii=True)}]}
+        if name == "memory_link":
+            rel = link(args["name"], args.get("related", []), args.get("scope", "global"))
+            return {"content": [{"type": "text", "text": f"已关联 {args['name']} → {', '.join(rel)}"}]}
+        if name == "memory_stats":
+            return {"content": [{"type": "text", "text": json.dumps(stats(), ensure_ascii=True)}]}
         raise ValueError(f"unknown tool: {name}")
     if method == "ping":
         return {}

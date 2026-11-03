@@ -6,6 +6,13 @@
         "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hook.js\"",
         "timeoutMs": 10000
       }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/harvest.js\"",
+        "timeoutMs": 10000
+      }
     ]
   }
 }

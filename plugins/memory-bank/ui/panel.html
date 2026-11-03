@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-  <h1>🧠 Memory Bank <span class="ver">v0.8.0</span></h1>
+  <h1>🧠 Memory Bank <span class="ver">v0.9.0</span></h1>
   <select id="scope">
     <option value="all">全部范围</option>
     <option value="global">全局</option>
@@ -20,6 +20,7 @@
     <option value="name">按名称</option>
   </select>
   <input id="q" type="search" placeholder="搜索记忆…" />
+  <button id="insightbtn" title="洞察：类型分布/热度/遗忘候选">📊</button>
   <button id="trashbtn" title="回收站">🗑</button>
   <button id="add" class="primary">＋ 新增</button>
   <button id="refresh">刷新</button>
@@ -27,6 +28,11 @@
 <div id="trashview" style="display:none">
   <div class="status" id="trash-status">加载回收站…</div>
   <div id="trash-list"></div>
+  <hr style="border-color:#8883" />
+</div>
+<div id="insightview" style="display:none">
+  <div class="status" id="insight-status">加载洞察…</div>
+  <div id="insight-body"></div>
   <hr style="border-color:#8883" />
 </div>
 <footer id="statsbar"><span><b id="st-total">0</b>条</span><span><b id="st-global">0</b>全局</span><span><b id="st-proj">0</b>项目</span><span><b id="st-pin">0</b>📌</span></footer>
