@@ -359,113 +359,13 @@ def unsupersede(name: str, scope: str = "global", workspace_path: str | None = N
     return e["name"]
 
 
-def _evolve_dir() -> Path:
-    d = resolve_root("global", None) / "evolve"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def capture(session_id: str, note: str = "") -> dict:
-    """进化闭环①捕获：会话结束时 Stop hook 写一条摘要进 inbox。
-    只记坐标（时间/会话/工作区），实质内容由 crystallize 从 model-io 日志提取——
-    hook 里做重解析会拖慢每轮收尾。"""
-    rec = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
-           "session": session_id, "note": note[:300]}
-    inbox = _evolve_dir() / "inbox.jsonl"
-    with inbox.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    return rec
-
-
-def crystallize(max_candidates: int = 5) -> dict:
-    """进化闭环②结晶：从 model-io 日志提取候选记忆（带 candidate 标记，不进 pin 注入）。
-    提取启发式只收三类硬证据：新出现且存在的绝对路径、可执行命令行、doctor/verify 的
-    显式结论行。软知识（判断/教训）不自动入库——无门控抽取产垃圾（psnb L13）。"""
-    inbox = _evolve_dir() / "inbox.jsonl"
-    if not inbox.exists():
-        return {"candidates": 0, "skipped": 0}
-        seen_sessions = set()
-    for l in inbox.read_text(encoding="utf-8").splitlines():
-        try:
-            seen_sessions.add(json.loads(l)["session"])
-        except Exception:
-            pass
-    processed = _evolve_dir() / "processed.jsonl"
-    done = set()
-    if processed.exists():
-        for l in processed.read_text(encoding="utf-8").splitlines():
-            try:
-                done.add(json.loads(l)["session"])
-            except Exception:
-                pass
-    todo = seen_sessions - done
-    root = resolve_root("global", None)
-    made = 0
-    for sid in sorted(todo):
-        # 从当日 rollout 找该会话日志
-        roll = Path(os.environ.get("ZCODE_HOME", str(Path.home() / ".zcode"))) / "cli" / "rollout"
-        if not roll.exists():
-            continue
-        cands = []
-        # 日志可达 GB 级：只读尾部 8MB（近期证据在尾部，zcode-purge verify 同款纪律）
-        TAIL = 8 * 1024 * 1024
-        # 正则 chr 构造：heredoc 会剥反斜杠，这里不写字面转义
-        B = chr(92)
-        PAT = re.compile("[EDe]:[/" + B + B + "][^" + chr(34) + chr(39) + B + "s,)]{4,90}")
-        for f in sorted(roll.glob("*" + sid[:8] + "*")):
-            with f.open("rb") as fh:
-                fh.seek(max(0, f.stat().st_size - TAIL))
-                text = fh.read().decode("utf-8", errors="replace")
-            for m in PAT.finditer(text):
-                v = m.group(0)
-                if any(k in v.lower() for k in ("appdata", "temp", "node_modules", ".git")):
-                    continue
-                if Path(v.replace("/", os.sep)).exists() and v not in [c[1] for c in cands]:
-                    cands.append(("path", v))
-            if len(cands) >= max_candidates:
-                break
-        for kind, val in cands[:max_candidates]:
-            name = slugify(kind + " " + val)[:48]
-            if find_entry(root, name):
-                continue
-            write_entry(root, name, "reference", "候选：" + val[:60],
-                        f"crystallize 自 {sid[:12]} 提取的证据：{val}" + chr(10) + chr(10) + "> " + chr(0x23F3) + " candidate：未晋升。晋升用 memory_promote，淘汰直接 forget。")
-            # candidate 标记写进正文尾（frontmatter metadata 由 write_entry 固定，不动核心结构）
-            fp = frontmatter_path(root, name)
-            t = fp.read_text(encoding="utf-8")
-            pass   # 标记已随 body 写入（见下方 write_entry 调用）
-            made += 1
-    with processed.open("a", encoding="utf-8") as f:
-        for sid in todo:
-            f.write(json.dumps({"session": sid}) + "\n")
-    return {"candidates": made, "skipped": len(todo) - made}
-
-
-def promote(name: str) -> dict:
-    """进化闭环③晋升：candidate → 正式记忆（去掉候选标记）。"""
-    root = resolve_root("global", None)
-    fp = frontmatter_path(root, name)
-    if not fp.exists():
-        raise ValueError("未找到: " + name)
-    mark = "> " + chr(0x23F3) + " candidate：未晋升。晋升用 memory_promote，淘汰直接 forget。"
-    t = fp.read_text(encoding="utf-8").replace(mark, "").rstrip() + chr(10)
-    fp.write_text(t, encoding="utf-8")
-    touch(root, name)
-    return {"name": name, "promoted": True}
-
-def dream(dry: bool = False, decay_days: int = None) -> dict:
+def dream(dry: bool = False, decay_days: int = 60) -> dict:
     """自进化巩固（离线跑，Cron 夜间）：
       ① 去重：同 scope 内正文前缀相同的条目，旧的被新的取代（pin 豁免）
       ② 衰退：非 pin、从未命中且创建超过 decay_days → forget 入回收站（可 restore）
       ③ 建链：同 scope 内描述 token 重叠 ≥2 的条目自动互相关联（每条 related 上限 5）
       ④ 重建 OVERVIEW。返回动作清单，全部动作有账可查（supersede/forget 均可逆）。"""
     today = datetime.date.today()
-    cfg = _evolve_dir() / "config.json"
-    if decay_days is None:
-        try:
-            decay_days = int(json.loads(cfg.read_text(encoding="utf-8")).get("decay_days", 60))
-        except (OSError, ValueError):
-            decay_days = 60
     actions = {"dedup": [], "decay": [], "link": [], "dry": dry}
     for scope in ("global", "project"):
         root = resolve_root(scope, None if scope == "global" else os.environ.get("ZCODE_PROJECT_DIR"))
@@ -510,23 +410,6 @@ def dream(dry: bool = False, decay_days: int = None) -> dict:
                         actions["link"].append((a["name"], b["name"]))
     if not dry:
         overview()
-        # 自调参：近 30 天恢复率 > 20% 说明衰退过狠 → decay_days +15（上限 120），写回 config
-        try:
-            rlog = _evolve_dir() / "restores.jsonl"
-            dlog = _evolve_dir() / "dream.jsonl"
-            cut = (datetime.datetime.now() - datetime.timedelta(days=30)).isoformat(timespec="seconds")
-            restores = sum(len(json.loads(l).get("names", [])) for l in rlog.read_text(encoding="utf-8").splitlines()
-                           if l.strip() and json.loads(l).get("ts", "") >= cut) if rlog.exists() else 0
-            decayed = sum(len(json.loads(l).get("decayed", [])) for l in dlog.read_text(encoding="utf-8").splitlines()
-                          if l.strip() and json.loads(l).get("ts", "") >= cut) if dlog.exists() else 0
-            if decayed and restores / decayed > 0.2:
-                decay_days = min(120, decay_days + 15)
-            cfg.write_text(json.dumps({"decay_days": decay_days}, ensure_ascii=False) + "\n", encoding="utf-8")
-            with dlog.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"ts": datetime.datetime.now().isoformat(timespec="seconds"),
-                                    "decayed": actions["decay"], "decay_days": decay_days}) + "\n")
-        except (OSError, ValueError):
-            pass
     return actions
 
 
@@ -623,12 +506,8 @@ def restore(name: str) -> list[str]:
                          entry.get("deleted_at", "")[:4] + "")
             done.append(f"{entry['scope']}:{entry['name']}")
     return done
-    # 恢复记账：dream 自调参的反馈信号（衰退太狠会在这里体现）
-    try:
-        with (_evolve_dir() / "restores.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": datetime.datetime.now().isoformat(timespec="seconds"), "names": done}) + "\n")
-    except OSError:
-        pass
+
+
 def trash_items() -> list[dict]:
     """列出回收站现存条目（文件还在的才有意义）。"""
     out = []
@@ -754,8 +633,6 @@ TOOLS = [
          "required": ["name", "related"]}},
     {"name": "memory_stats", "description": "全景统计：类型分布/近30天写入/top hits/90天零命中候选",
      "inputSchema": {"type": "object", "properties": {}, "required": []}},
-    {"name": "memory_promote", "description": "晋升 candidate 记忆为正式记忆（去掉未晋升标记）。crystallize 产出的候选经确认后用这个转正",
-     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
     {"name": "memory_dream", "description": "自进化巩固：去重（旧被新取代）+ 衰退（长期零命中入回收站，可 restore）+ 同域自动建链 + 重建 OVERVIEW。夜间 Cron 跑，也可手动。dry=true 先看会动什么",
      "inputSchema": {"type": "object", "properties": {
          "dry": {"type": "boolean", "default": False},
@@ -894,9 +771,6 @@ def _mcp_dispatch(method: str, params: dict):
             return {"content": [{"type": "text", "text": f"已关联 {args['name']} → {', '.join(rel)}"}]}
         if name == "memory_stats":
             return {"content": [{"type": "text", "text": json.dumps(stats(), ensure_ascii=True)}]}
-        if name == "memory_promote":
-            r = promote(args["name"])
-            return {"content": [{"type": "text", "text": "已晋升 " + r["name"]}]}
         if name == "memory_dream":
             r = dream(bool(args.get("dry")), int(args.get("decay_days", 60)))
             lines = ["dry=" + str(r["dry"]),
@@ -934,9 +808,6 @@ def main() -> int:
     sp = sub.add_parser("stats")
     sp = sub.add_parser("supersede"); sp.add_argument("name"); sp.add_argument("by"); sp.add_argument("--scope", default="global", choices=["global", "project"])
     sp = sub.add_parser("unsupersede"); sp.add_argument("name"); sp.add_argument("--scope", default="global", choices=["global", "project"])
-    sp = sub.add_parser("capture"); sp.add_argument("--session", required=True); sp.add_argument("--note", default="")
-    sp = sub.add_parser("crystallize"); sp.add_argument("--max", type=int, default=5)
-    sp = sub.add_parser("promote"); sp.add_argument("name")
     sp = sub.add_parser("dream"); sp.add_argument("--dry", action="store_true"); sp.add_argument("--decay-days", type=int, default=60)
     sp = sub.add_parser("overview")
     a = ap.parse_args()
@@ -960,13 +831,7 @@ def main() -> int:
             print(f"{r['name']} -> superseded_by {r['superseded_by']}")
         elif a.cmd == "unsupersede":
             print(f"cleared: {unsupersede(a.name, a.scope)}")
-        if a.cmd == "capture":
-            print(json.dumps(capture(a.session, a.note), ensure_ascii=False)); return 0
-        elif a.cmd == "crystallize":
-            print(json.dumps(crystallize(a.max), ensure_ascii=False)); return 0
-        elif a.cmd == "promote":
-            print(json.dumps(promote(a.name), ensure_ascii=False)); return 0
-        elif a.cmd == "dream":
+        if a.cmd == "dream":
             r = dream(a.dry, a.decay_days)
             print(json.dumps({"dry": r["dry"], "dedup": len(r["dedup"]), "decay": len(r["decay"]), "link": len(r["link"])}, ensure_ascii=False))
             return 0
