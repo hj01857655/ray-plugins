@@ -359,6 +359,60 @@ def unsupersede(name: str, scope: str = "global", workspace_path: str | None = N
     return e["name"]
 
 
+def dream(dry: bool = False, decay_days: int = 60) -> dict:
+    """自进化巩固（离线跑，Cron 夜间）：
+      ① 去重：同 scope 内正文前缀相同的条目，旧的被新的取代（pin 豁免）
+      ② 衰退：非 pin、从未命中且创建超过 decay_days → forget 入回收站（可 restore）
+      ③ 建链：同 scope 内描述 token 重叠 ≥2 的条目自动互相关联（每条 related 上限 5）
+      ④ 重建 OVERVIEW。返回动作清单，全部动作有账可查（supersede/forget 均可逆）。"""
+    today = datetime.date.today()
+    actions = {"dedup": [], "decay": [], "link": [], "dry": dry}
+    for scope in ("global", "project"):
+        root = resolve_root(scope, None if scope == "global" else os.environ.get("ZCODE_PROJECT_DIR"))
+        items = [e for e in entries(root)]
+        # ① 去重（旧 → 新取代）
+        seen: dict[str, dict] = {}
+        for e in sorted(items, key=lambda x: x.get("created") or ""):
+            if e.get("superseded_by") or (e.get("pinned")):
+                continue
+            key = re.sub(r"\s+", " ", e["body"])[:100]
+            if key in seen:
+                if not dry:
+                    supersede(e["name"], seen[key]["name"], scope=scope)
+                actions["dedup"].append((e["name"], seen[key]["name"]))
+            else:
+                seen[key] = e
+        # ② 衰退
+        for e in items:
+            if e.get("pinned") or e.get("superseded_by") or e.get("hits", 0) > 0:
+                continue
+            age = 0
+            if e.get("created"):
+                try:
+                    age = (today - datetime.date.fromisoformat(e["created"][:10])).days
+                except ValueError:
+                    pass
+            if age >= decay_days:
+                if not dry:
+                    forget(e["name"], scope=scope)
+                actions["decay"].append(e["name"])
+        # ③ 建链（描述 token 重叠）
+        live = [e for e in entries(root) if not e.get("superseded_by")]
+        for i, a in enumerate(live):
+            ta = set(_tokens(a["description"]))
+            for b in live[i + 1:]:
+                tb = set(_tokens(b["description"]))
+                if len(ta & tb) >= 2:
+                    ra = set(a.get("related") or []); rb = set(b.get("related") or [])
+                    if b["name"] not in ra and a["name"] not in rb and len(ra) < 5 and len(rb) < 5:
+                        if not dry:
+                            link(a["name"], [b["name"]], scope=scope)
+                        actions["link"].append((a["name"], b["name"]))
+    if not dry:
+        overview()
+    return actions
+
+
 def overview() -> str:
     """活文档：把全部有效记忆编成可读总览（pin/热度优先，跳已取代），写 REG_DIR/OVERVIEW.md。"""
     roots = {"global": resolve_root("global", None),
@@ -579,6 +633,10 @@ TOOLS = [
          "required": ["name", "related"]}},
     {"name": "memory_stats", "description": "全景统计：类型分布/近30天写入/top hits/90天零命中候选",
      "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "memory_dream", "description": "自进化巩固：去重（旧被新取代）+ 衰退（长期零命中入回收站，可 restore）+ 同域自动建链 + 重建 OVERVIEW。夜间 Cron 跑，也可手动。dry=true 先看会动什么",
+     "inputSchema": {"type": "object", "properties": {
+         "dry": {"type": "boolean", "default": False},
+         "decay_days": {"type": "integer", "default": 60}}, "required": []}},
     {"name": "memory_supersede", "description": "标记旧事实被新事实取代（Zep 式：不删除，召回自动沉底，两边双向 related）",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string"}, "by": {"type": "string"},
@@ -713,6 +771,13 @@ def _mcp_dispatch(method: str, params: dict):
             return {"content": [{"type": "text", "text": f"已关联 {args['name']} → {', '.join(rel)}"}]}
         if name == "memory_stats":
             return {"content": [{"type": "text", "text": json.dumps(stats(), ensure_ascii=True)}]}
+        if name == "memory_dream":
+            r = dream(bool(args.get("dry")), int(args.get("decay_days", 60)))
+            lines = ["dry=" + str(r["dry"]),
+                     "去重: " + str(len(r["dedup"])) + " " + "; ".join(a + " -> " + b for a, b in r["dedup"][:5]),
+                     "衰退: " + str(len(r["decay"])) + " " + ", ".join(r["decay"][:8]),
+                     "建链: " + str(len(r["link"])) + " " + "; ".join(a + " <-> " + b for a, b in r["link"][:5])]
+            return {"content": [{"type": "text", "text": chr(10).join(lines)}]}
         if name == "memory_supersede":
             r = supersede(args["name"], args["by"], args.get("scope", "global"))
             return {"content": [{"type": "text", "text": f"{r['name']} 已标记为被 {r['superseded_by']} 取代（旧事实保留，召回沉底）"}]}
@@ -743,6 +808,7 @@ def main() -> int:
     sp = sub.add_parser("stats")
     sp = sub.add_parser("supersede"); sp.add_argument("name"); sp.add_argument("by"); sp.add_argument("--scope", default="global", choices=["global", "project"])
     sp = sub.add_parser("unsupersede"); sp.add_argument("name"); sp.add_argument("--scope", default="global", choices=["global", "project"])
+    sp = sub.add_parser("dream"); sp.add_argument("--dry", action="store_true"); sp.add_argument("--decay-days", type=int, default=60)
     sp = sub.add_parser("overview")
     a = ap.parse_args()
     try:
@@ -765,6 +831,10 @@ def main() -> int:
             print(f"{r['name']} -> superseded_by {r['superseded_by']}")
         elif a.cmd == "unsupersede":
             print(f"cleared: {unsupersede(a.name, a.scope)}")
+        if a.cmd == "dream":
+            r = dream(a.dry, a.decay_days)
+            print(json.dumps({"dry": r["dry"], "dedup": len(r["dedup"]), "decay": len(r["decay"]), "link": len(r["link"])}, ensure_ascii=False))
+            return 0
         elif a.cmd == "overview":
             print(overview())
     except ValueError as e:
