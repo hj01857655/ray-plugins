@@ -92,8 +92,9 @@ def write_entry(root: Path, name: str, mtype: str, description: str, body: str,
                 created: str | None = None, tags: list[str] | None = None) -> Path:
     """统一写入格式：save 与 memory_edit 共用，保证 frontmatter 结构一致。"""
     today = datetime.date.today().isoformat()
+    desc = " ".join(description.split())   # 描述必须单行，否则 frontmatter 结构被弄破
     tag_line = ("tags: [" + ", ".join(tags) + "]\n") if tags else ""
-    text = (f"---\nname: {name}\ndescription: {description}\n"
+    text = (f"---\nname: {name}\ndescription: {desc}\n"
             f"{tag_line}metadata:\n  type: {mtype}\ncreated: {created or today}\n---\n\n{body.rstrip()}\n")
     path = frontmatter_path(root, name)
     path.write_text(text, encoding="utf-8")
@@ -164,7 +165,8 @@ def edit(name: str, text: str | None = None, description: str | None = None,
         base = re.sub(r"\n\n\*\*Why:\*\*[\s\S]*$", "", e["body"])
         new_body = base if new_type in ("user", "reference") else \
             f"{base}\n\n**Why:** {new_desc}\n**How to apply:** 记录于 {e.get('created') or datetime.date.today().isoformat()}"
-    new_tags = sorted(set((e.get("tags") or []) | set(tags or []))) if tags is not None else e.get("tags")
+    # tags 传入即替换（面板编辑把删掉的 tag 从列表里去掉，合并语义会让删除失效）
+    new_tags = sorted(set(tags or [])) if tags is not None else e.get("tags")
     write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"), tags=new_tags)
     index_update(root, e["name"], new_desc.split("。")[0][:40], e.get("created") or "")
     return {"name": e["name"], "scope": scope, "description": new_desc}
@@ -312,10 +314,11 @@ TOOLS = [
          "required": []}},
     {"name": "memory_get", "description": "按 name 读取单条记忆全文",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
-    {"name": "memory_edit", "description": "更新既有记忆的正文/描述/类型（保留 slug 与创建日期）",
+    {"name": "memory_edit", "description": "更新既有记忆的正文/描述/类型/标签（保留 slug 与创建日期；tags 传入即整体替换）",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string"}, "text": {"type": "string"},
          "description": {"type": "string"}, "type": {"type": "string", "enum": list(TYPES)},
+         "tags": {"type": "array", "items": {"type": "string"}},
          "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
          "required": ["name"]}},
     {"name": "memory_trash", "description": "列出回收站现存条目（面板回收站视图数据源）",
@@ -347,17 +350,18 @@ def render_panel() -> str:
     return html
 
 
-def _is_pinned(name: str, scope: str) -> bool:
-    root = str(resolve_root("global" if scope == "global" else "project",
-                            os.environ.get("ZCODE_PROJECT_DIR")))
-    return bool(load_pins().get(root, {}).get(name))
-
-
 def _items_json(items: list[dict]) -> str:
+    pins = load_pins()   # 一次读入，别每条记忆都碰一次磁盘
+    proj_root = str(resolve_root("project", os.environ.get("ZCODE_PROJECT_DIR")))
+    glob_root = str(resolve_root("global", None))
+
+    def pinned(name: str, scope: str) -> bool:
+        return bool(pins.get(proj_root if scope != "global" else glob_root, {}).get(name))
+
     return json.dumps([{"name": e["name"], "description": e["description"], "type": e["type"],
                         "scope": e["scope"], "body": e["body"], "created": e.get("created", ""),
                         "tags": e.get("tags", []),
-                        "pinned": _is_pinned(e["name"], e["scope"])} for e in items],
+                        "pinned": pinned(e["name"], e["scope"])} for e in items],
                        ensure_ascii=True)
 
 
@@ -384,7 +388,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.7.0"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.7.1"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
@@ -408,7 +412,7 @@ def _mcp_dispatch(method: str, params: dict):
             items = search(args.get("query", ""), args.get("scope", "all"), limit=100)
             return {"content": [{"type": "text", "text": _items_json(items)}]}
         if name == "memory_get":
-            found = search(args["name"], "all", limit=1)
+            found = [e for e in search("", "all", limit=500) if e["name"].startswith(args["name"])]
             if not found:
                 raise ValueError(f"未找到: {args['name']}")
             return {"content": [{"type": "text", "text": found[0]["body"]}]}

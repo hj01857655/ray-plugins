@@ -38,16 +38,19 @@ window.addEventListener('message', (ev) => {
 
 async function connect() {
   await call('ui/initialize', {
-    appInfo: { name: 'Memory Bank', version: '0.7.0' },
+    appInfo: { name: 'Memory Bank', version: '0.7.1' },
     appCapabilities: {},
     protocolVersion: PROTOCOL_VERSION,
   });
   notify('ui/notifications/initialized');
 }
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+// 属性上下文也要安全：引号必须转义（esc 结果会放进 value="…"）
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
+let refreshSeq = 0;
 async function refresh() {
+  const seq = ++refreshSeq;   // 旧请求后返回时丢弃，避免慢响应覆盖新结果
   const q = document.getElementById('q').value.trim();
   const scope = document.getElementById('scope').value;
   const sort = document.getElementById('sort').value;
@@ -55,6 +58,7 @@ async function refresh() {
   list.innerHTML = '<div class="status">加载中…</div>';
   try {
     const items = JSON.parse(await tool('memory_list', { query: q, scope }));
+    if (seq !== refreshSeq) return;
     items.sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name)
       : sort === 'pin' ? ((b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)) || String(b.created).localeCompare(String(a.created))
       : String(b.created).localeCompare(String(a.created)));
@@ -120,7 +124,7 @@ async function refresh() {
       list.appendChild(card);
     }
   } catch (err) {
-    list.innerHTML = '<div class="status err">加载失败: ' + esc(err.message) + '</div>';
+    if (seq === refreshSeq) list.innerHTML = '<div class="status err">加载失败: ' + esc(err.message) + '</div>';
   }
 }
 
@@ -140,6 +144,10 @@ document.getElementById('f-save').onclick = async () => {
     refresh();
   } catch (err) { alert('保存失败: ' + err.message); }
 };
+
+// 面板加载即聚焦搜索框
+const searchBox = document.getElementById('q');
+searchBox.focus();
 
 let debounce;
 document.getElementById('q').addEventListener('input', () => {
