@@ -213,6 +213,26 @@ def edit(name: str, text: str | None = None, description: str | None = None,
     return {"name": e["name"], "scope": scope, "description": new_desc}
 
 
+def _tokens(query: str) -> list[str]:
+    """查询分词：ASCII 按词切；CJK 连续段切 bigram（单字保留）。
+    中文整句子串匹配永远失败（issue：recall 中文零命中），这里做多 token OR 匹配。"""
+    q = (query or "").lower()
+    if not q.strip():
+        return []
+    out: list[str] = []
+    for chunk in q.split():
+        for m in re.finditer(r"[a-z0-9_]+|[一-鿿]+", chunk):
+            t = m.group(0)
+            if re.fullmatch(r"[一-鿿]+", t):
+                if len(t) == 1:
+                    out.append(t)
+                else:
+                    out.extend(t[i:i + 2] for i in range(len(t) - 1))   # CJK bigram
+            else:
+                out.append(t)
+    return sorted(set(out))
+
+
 def search(query: str, scope: str = "all", workspace_path: str | None = None, limit: int = 20,
            tag: str | None = None) -> list[dict]:
     roots = []
@@ -220,16 +240,22 @@ def search(query: str, scope: str = "all", workspace_path: str | None = None, li
         roots.append(("global", resolve_root("global", None)))
     if scope in ("all", "project"):
         roots.append(("project", resolve_root("project", workspace_path)))
-    q = query.lower()
+    toks = _tokens(query)
     tag_l = tag.lower() if tag else None
     hits = []
     for s, root in roots:
         for e in entries(root):
-            if q and not (q in e["name"].lower() or q in e["description"].lower() or q in e["body"].lower()):
-                continue
+            if toks:
+                hay = (e["name"] + " " + e["description"] + " " + e["body"]).lower()
+                n = sum(1 for t in toks if t in hay)
+                if n == 0:
+                    continue
+            else:
+                n = 0
             if tag_l and tag_l not in [t.lower() for t in (e.get("tags") or [])]:
                 continue
-            hits.append(e | {"scope": s})
+            hits.append(e | {"scope": s, "tok_hits": n})
+    hits.sort(key=lambda x: x.get("tok_hits", 0), reverse=True)
     return hits[:limit]
 
 
@@ -263,7 +289,8 @@ def recall(query: str, scope: str = "all", workspace_path: str | None = None, k:
             e["score"] = -100 + e.get("hits", 0)
         else:
             e["score"] = ((1000 if pinned else 0) + e.get("hits", 0) * 5
-                          + max(0, 30 - min(age, 30)) + (3 if query.lower() in e["name"].lower() else 0))
+                          + max(0, 30 - min(age, 30)) + (3 if query.lower() in e["name"].lower() else 0)
+                          + e.get("tok_hits", 0) * 10)
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:k]
 
@@ -672,6 +699,9 @@ def _mcp_dispatch(method: str, params: dict):
             return {"content": [{"type": "text", "text": f"已删除 {len(gone)}: {', '.join(gone)}" if gone else "未找到"}]}
         if name == "memory_recall":
             items = recall(args.get("query", ""), args.get("scope", "all"), k=args.get("k", 5))
+            if args.get("query", "").strip():   # 命中计数：recall 也是一次命中（原实现只在 memory_get 计数）
+                for e in items[:3]:
+                    touch(resolve_root("project" if e["scope"] != "global" else "global", None), e["name"])
             out = "\n".join(f"{e['name']}  [{e['type'] or '?'}] ({e['scope']}) score={e['score']} "
                             f"hits={e.get('hits', 0)}  {e['description']}" for e in items)
             return {"content": [{"type": "text", "text": out or "（无命中）"}]}
