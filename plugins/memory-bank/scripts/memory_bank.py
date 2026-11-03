@@ -331,9 +331,20 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
 ]
 
-# ui.surfaces 面板资源：宿主经 resources/read 取 ui://memory-bank/panel.html 渲染进沙箱 webview
+# ui.surfaces 面板资源：宿主经 resources/read 取 ui://memory-bank/panel.html 渲染进沙箱 webview。
+# 源码拆成 panel.html/css/js 三件，读出时按 /*INLINE:<name>*/ 标记内联回单 HTML（宿主只认单文件资源）。
 PANEL_URI = "ui://memory-bank/panel.html"
-PANEL_FILE = Path(__file__).resolve().parent.parent / "ui" / "panel.html"
+PANEL_DIR = Path(__file__).resolve().parent.parent / "ui"
+
+
+def render_panel() -> str:
+    html = (PANEL_DIR / "panel.html").read_text(encoding="utf-8")
+    for tag in ("panel.css", "panel.js"):
+        body = (PANEL_DIR / tag).read_text(encoding="utf-8")
+        html = html.replace(f"/*INLINE:{tag}*/", body)
+    if "/*INLINE:" in html:
+        raise ValueError("panel 内联标记未全部替换，检查 ui/ 下文件")
+    return html
 
 
 def _is_pinned(name: str, scope: str) -> bool:
@@ -373,7 +384,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.6.0"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.7.0"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
@@ -381,7 +392,7 @@ def _mcp_dispatch(method: str, params: dict):
         if params.get("uri") != PANEL_URI:
             raise ValueError(f"unknown resource: {params.get('uri')}")
         return {"contents": [{"uri": PANEL_URI, "mimeType": "text/html",
-                              "text": PANEL_FILE.read_text(encoding="utf-8")}]}
+                              "text": render_panel()}]}
     if method == "tools/list":
         return {"tools": TOOLS}
     if method == "tools/call":

@@ -1,0 +1,36 @@
+/* Memory Bank 面板样式（由 memory_bank.py 在 resources/read 时内联进 panel.html） */
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.5 system-ui, sans-serif; padding: 12px; }
+header { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+header h1 { font-size: 14px; margin: 0 auto 0 0; }
+input[type=search], select, textarea, .f input {
+  padding: 6px 8px; border: 1px solid #8884; border-radius: 6px;
+  background: transparent; color: inherit; font: inherit;
+}
+input[type=search] { flex: 1; min-width: 120px; }
+select { cursor: pointer; }
+button { padding: 5px 9px; border: 1px solid #8884; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+button:hover { background: #8882; }
+button.primary { border-color: transparent; background: #4a7dff; color: #fff; }
+button.danger:hover { background: #c0392b33; border-color: #c0392b; }
+.card { border: 1px solid #8884; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+.card .head { display: flex; align-items: center; gap: 6px; cursor: pointer; flex-wrap: wrap; }
+.card .name { font-weight: 600; word-break: break-all; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid #8884; color: #888; }
+.badge.t-user { color: #2e86de; border-color: #2e86de66; }
+.badge.t-feedback { color: #e67e22; border-color: #e67e2266; }
+.badge.t-project { color: #27ae60; border-color: #27ae6066; }
+.badge.t-reference { color: #8e44ad; border-color: #8e44ad66; }
+.tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #4a7dff22; color: #7aa3ff; }
+.card .date { font-size: 11px; color: #888; margin-left: auto; }
+.card .desc { color: #888; margin-top: 2px; }
+.card pre { white-space: pre-wrap; word-break: break-word; background: #8881; border-radius: 6px; padding: 8px; margin: 8px 0 6px; }
+.card textarea, .card .f input { width: 100%; margin: 4px 0; }
+.card textarea { min-height: 90px; resize: vertical; }
+.ops { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.status { color: #888; padding: 20px; text-align: center; }
+.err { color: #c0392b; }
+#form { border: 1px dashed #8886; border-radius: 8px; padding: 10px; margin-bottom: 10px; display: none; }
+#form textarea { width: 100%; min-height: 70px; resize: vertical; margin: 6px 0; }
+#form .row { display: flex; gap: 6px; align-items: center; }
