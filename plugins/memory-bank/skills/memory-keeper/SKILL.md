@@ -18,7 +18,7 @@ description: Use when the user states a durable fact, preference, decision, or p
 - 保存：`memory_save{text, type?, scope?}` — type 选 user（用户偏好）/feedback（工作方式纠正）/project（非代码可推导的项目事实）/reference（外部链接）
 - 检索：`memory_search{query?, scope?}`；删除：`memory_forget{name}`
 - pin：CLI `python -I "<插件>/scripts/memory_bank.py" pin <name>` → hook 每会话强制注入
-- MCP 不可用走 CLI：save/search/list/forget/pin/unpin/stats
+- MCP 不可用走 CLI：save/search/list/forget/pin/unpin/stats；面板可视化：ZCode 内「记忆库」ui surface（增删改、pin、回收站恢复）
 
 ## 什么值得存
 

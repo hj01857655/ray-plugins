@@ -38,7 +38,7 @@ window.addEventListener('message', (ev) => {
 
 async function connect() {
   await call('ui/initialize', {
-    appInfo: { name: 'Memory Bank', version: '0.7.1' },
+    appInfo: { name: 'Memory Bank', version: '0.7.2' },
     appCapabilities: {},
     protocolVersion: PROTOCOL_VERSION,
   });

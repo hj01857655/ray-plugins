@@ -26,6 +26,11 @@ function readPins() {
   try { return JSON.parse(fs.readFileSync(PINS, 'utf8')); } catch { return {}; }
 }
 
+function pinnedNames(rootKey) {
+  const pins = readPins();
+  return new Set(Object.keys(pins[rootKey] || {}));
+}
+
 function parseEntry(p) {
   try {
     const text = fs.readFileSync(p, 'utf8');
@@ -47,8 +52,6 @@ let payload = {};
 try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch { /* stdin 可能为空 */ }
 const cwd = process.env.ZCODE_PROJECT_DIR || payload.cwd || process.cwd();
 const pins = readPins();
-const pinnedNames = new Set(Object.values(pins).flatMap((s) => Object.keys(s)));
-
 const lines = ['[Memory Bank] 确定性记忆（pin 全文 + 记忆索引，等效引擎 default-index 档）：', ''];
 let used = lines.join('\n').length, shown = 0;
 for (const [rootKey, names] of Object.entries(pins)) {
@@ -68,8 +71,8 @@ for (const [label, root] of [['global', path.join(MEM_ROOT, 'global', 'memory')]
   let idx = '';
   try { idx = fs.readFileSync(path.join(root, 'MEMORY.md'), 'utf8'); } catch { continue; }
   const items = idx.split(/\r?\n/).filter((l) => l.startsWith('- ['))
-    // pin 过的记忆已有全文注入，索引行去重
-    .filter((l) => !Object.values(Object.values(pins).find((s) => s) || {}).length || !pinnedNames.has(l.match(/\]\(([^)]+)\)/)?.[1]?.replace(/\.md$/, '')));
+    // pin 过的记忆已有全文注入，索引行去重（只按本根 pin 集合滤，防跨根同名误伤）
+    .filter((l) => !pinnedNames(root).has(l.match(/\]\(([^)]+)\)/)?.[1]?.replace(/\.md$/, '')));
   if (!items.length) continue;
   const chunk = `记忆索引（${label}）：\n` + items.join('\n');
   if (used + chunk.length > MAX_CHARS) { lines.push(`- …（${label} 索引超预算，用 /recall 查询）`); break; }

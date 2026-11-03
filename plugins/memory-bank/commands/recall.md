@@ -8,4 +8,4 @@ argument-hint: [关键词]
 - 有关键词「$ARGUMENTS」：按 name/description/正文过滤
 - 无关键词：全部列出，mtime 倒序
 
-输出：name | type | scope | description。pin 过的标 📌。最后提示 /forget <name> 可删除。
+输出：name | type | scope | description。pin 过的标 📌（面板或 `memory_list` JSON 里的 pinned 字段）。最后提示 /forget <name> 可删除。
