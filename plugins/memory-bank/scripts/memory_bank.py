@@ -172,18 +172,23 @@ def edit(name: str, text: str | None = None, description: str | None = None,
     return {"name": e["name"], "scope": scope, "description": new_desc}
 
 
-def search(query: str, scope: str = "all", workspace_path: str | None = None, limit: int = 20) -> list[dict]:
+def search(query: str, scope: str = "all", workspace_path: str | None = None, limit: int = 20,
+           tag: str | None = None) -> list[dict]:
     roots = []
     if scope in ("all", "global"):
         roots.append(("global", resolve_root("global", None)))
     if scope in ("all", "project"):
         roots.append(("project", resolve_root("project", workspace_path)))
     q = query.lower()
+    tag_l = tag.lower() if tag else None
     hits = []
     for s, root in roots:
         for e in entries(root):
-            if not q or q in e["name"].lower() or q in e["description"].lower() or q in e["body"].lower():
-                hits.append(e | {"scope": s})
+            if q and not (q in e["name"].lower() or q in e["description"].lower() or q in e["body"].lower()):
+                continue
+            if tag_l and tag_l not in [t.lower() for t in (e.get("tags") or [])]:
+                continue
+            hits.append(e | {"scope": s})
     return hits[:limit]
 
 
@@ -303,13 +308,14 @@ TOOLS = [
          "text": {"type": "string"}, "type": {"type": "string", "enum": list(TYPES), "default": "project"},
          "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
          "required": ["text"]}},
-    {"name": "memory_search", "description": "按关键词检索内置记忆（空关键词=列出全部）",
+    {"name": "memory_search", "description": "按关键词检索内置记忆（空关键词=列出全部；支持 tag 过滤）",
      "inputSchema": {"type": "object", "properties": {
-         "query": {"type": "string"}, "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
+         "query": {"type": "string"}, "tag": {"type": "string"},
+         "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
          "required": []}},
     {"name": "memory_list", "description": "列出记忆（结构化 JSON，含正文与 pin 状态；Memory Bank 面板数据源）",
      "inputSchema": {"type": "object", "properties": {
-         "query": {"type": "string", "default": ""},
+         "query": {"type": "string", "default": ""}, "tag": {"type": "string"},
          "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
          "required": []}},
     {"name": "memory_get", "description": "按 name 读取单条记忆全文",
@@ -388,7 +394,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.7.2"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.7.3"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
@@ -406,10 +412,10 @@ def _mcp_dispatch(method: str, params: dict):
                      tags=args.get("tags"))
             return {"content": [{"type": "text", "text": f"已保存 {r['name']} ({r['scope']}) → {r['path']}"}]}
         if name == "memory_search":
-            items = search(args.get("query", ""), args.get("scope", "all"))
+            items = search(args.get("query", ""), args.get("scope", "all"), tag=args.get("tag"))
             return {"content": [{"type": "text", "text": render(items)}]}
         if name == "memory_list":
-            items = search(args.get("query", ""), args.get("scope", "all"), limit=100)
+            items = search(args.get("query", ""), args.get("scope", "all"), limit=100, tag=args.get("tag"))
             return {"content": [{"type": "text", "text": _items_json(items)}]}
         if name == "memory_get":
             found = [e for e in search("", "all", limit=500) if e["name"].startswith(args["name"])]

@@ -38,7 +38,7 @@ window.addEventListener('message', (ev) => {
 
 async function connect() {
   await call('ui/initialize', {
-    appInfo: { name: 'Memory Bank', version: '0.7.2' },
+    appInfo: { name: 'Memory Bank', version: '0.7.3' },
     appCapabilities: {},
     protocolVersion: PROTOCOL_VERSION,
   });
@@ -66,7 +66,10 @@ async function refresh() {
     st.textContent = items.length + ' 条 · 全局 ' + items.filter(i => i.scope === 'global').length +
       ' · 项目 ' + items.filter(i => i.scope !== 'global').length +
       ' · 📌 ' + items.filter(i => i.pinned).length;
-    if (!items.length) { list.innerHTML = '<div class="status">（暂无记忆）</div>'; return; }
+    if (!items.length) {
+      list.innerHTML = '<div class="status">' + (q ? '无匹配「' + esc(q) + '」的记忆' : '（暂无记忆，点「＋ 新增」写入第一条）') + '</div>';
+      return;
+    }
     list.innerHTML = '';
     for (const it of items) {
       const card = document.createElement('div');
@@ -145,9 +148,12 @@ document.getElementById('f-save').onclick = async () => {
   } catch (err) { alert('保存失败: ' + err.message); }
 };
 
-// 面板加载即聚焦搜索框
+// 面板加载即聚焦搜索框；回车立即搜索
 const searchBox = document.getElementById('q');
 searchBox.focus();
+searchBox.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') { clearTimeout(debounce); refresh(); }
+});
 
 let debounce;
 document.getElementById('q').addEventListener('input', () => {
