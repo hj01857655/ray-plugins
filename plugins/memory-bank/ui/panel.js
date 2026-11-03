@@ -38,7 +38,7 @@ window.addEventListener('message', (ev) => {
 
 async function connect() {
   await call('ui/initialize', {
-    appInfo: { name: 'Memory Bank', version: '0.9.0' },
+    appInfo: { name: 'Memory Bank', version: '0.9.1' },
     appCapabilities: {},
     protocolVersion: PROTOCOL_VERSION,
   });
@@ -87,6 +87,7 @@ async function refresh() {
     if (seq !== refreshSeq) return;
     const filtered = activeTag ? items.filter(i => (i.tags || []).includes(activeTag)) : items;
     filtered.sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name)
+      : sort === 'heat' ? ((b.hits || 0) - (a.hits || 0)) || String(b.created).localeCompare(String(a.created))
       : sort === 'pin' ? ((b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)) || String(b.created).localeCompare(String(a.created))
       : String(b.created).localeCompare(String(a.created)));
     const st = (id, v) => document.getElementById(id).textContent = v;
@@ -101,7 +102,7 @@ async function refresh() {
     list.innerHTML = '';
     for (const it of filtered) {
       const card = document.createElement('div');
-      card.className = 'card';
+      card.className = 'card' + (it.superseded_by ? ' sup' : '');
       const rels = [...new Set([...(it.related || []), ...(it.links || [])])];
       card.style.setProperty('--tcolor', `var(--${it.type || 'project'}, var(--accent))`);
       card.innerHTML =
@@ -109,6 +110,7 @@ async function refresh() {
         (it.pinned ? '<span title="已 pin，每会话必注入">📌</span>' : '') +
         '<span class="badge t-' + esc(it.type || 'project') + '">' + esc(it.type || '?') + '</span>' +
         '<span class="badge">' + esc(it.scope) + '</span>' +
+        (it.superseded_by ? '<span class="badge sup-badge" title="已被取代，召回自动沉底">已取代→' + esc(it.superseded_by) + '</span>' : '') +
         ((it.hits > 0) ? '<span class="heat" title="命中 ' + it.hits + ' 次' + (it.last_hit ? '，最近 ' + esc(it.last_hit) : '') + '">🔥' + it.hits + '</span>' : '') +
         '<span class="date" title="' + esc(it.created || '') + '">' + relTime(it.created) + '</span></div>' +
         '<div class="desc">' + esc(it.description) + '</div>' +
@@ -128,6 +130,9 @@ async function refresh() {
         '<button data-op="save" class="primary" style="display:none">保存修改</button>' +
         '<button data-op="cancel" style="display:none">取消</button>' +
         '<button data-op="pin">' + (it.pinned ? '取消 Pin' : 'Pin') + '</button>' +
+        (it.superseded_by
+          ? '<button data-op="unsup">撤销取代</button>'
+          : '<button data-op="sup" title="标记本条被另一条取代（旧事实不删）">取代…</button>') +
         '<button data-op="hist">历史</button>' +
         '<button data-op="forget" class="danger">删除</button></div>' +
         '<div class="histview" style="display:none"></div>';
@@ -152,7 +157,7 @@ async function refresh() {
       btn('edit').onclick = () => {
         pre.style.display = 'none'; preview.style.display = 'none';
         editBox.style.display = 'block';
-        for (const op of ['copy', 'edit', 'pin', 'hist', 'forget']) btn(op).style.display = 'none';
+        for (const op of ['copy', 'edit', 'pin', 'hist', 'forget']) { const b = card.querySelector('[data-op=' + op + ']'); if (b) b.style.display = 'none'; }
         btn('save').style.display = btn('cancel').style.display = '';
       };
       btn('cancel').onclick = () => { editBox.style.display = 'none'; refresh(); };
@@ -169,6 +174,19 @@ async function refresh() {
         try { await tool('memory_pin', { name: it.name, on: !it.pinned, scope: it.scope });
           toast(it.pinned ? '已取消 pin' : '已 pin，每会话必注入'); refresh(); }
         catch (err) { toast('pin 失败: ' + err.message, true); }
+      };
+      const supBtn = card.querySelector('[data-op=sup]'), unsupBtn = card.querySelector('[data-op=unsup]');
+      if (supBtn) supBtn.onclick = async () => {
+        const by = prompt('本条记忆将被哪条取代？输入目标 name（可用前缀）：');
+        if (!by || !by.trim()) return;
+        try { await tool('memory_supersede', { name: it.name, by: by.trim(), scope: it.scope });
+          toast('已标记取代'); refresh(); }
+        catch (err) { toast('取代失败: ' + err.message, true); }
+      };
+      if (unsupBtn) unsupBtn.onclick = async () => {
+        try { await tool('memory_unsupersede', { name: it.name, scope: it.scope });
+          toast('已撤销取代标记'); refresh(); }
+        catch (err) { toast('撤销失败: ' + err.message, true); }
       };
       btn('hist').onclick = async () => {
         const hv = card.querySelector('.histview');
@@ -225,7 +243,7 @@ document.getElementById('f-save').onclick = async () => {
   } catch (err) { toast('保存失败: ' + err.message, true); }
 };
 
-// 面板加载即聚焦搜索框；回车立即搜索
+// 面板加载即聚焦搜索框；回车立即搜索；Ctrl+K / / 聚焦搜索框
 const searchBox = document.getElementById('q');
 searchBox.focus();
 let debounce;
@@ -236,6 +254,13 @@ searchBox.addEventListener('input', () => {
 searchBox.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter') { clearTimeout(debounce); refresh(); }
   if (ev.key === 'Escape' && activeTag) { activeTag = null; refresh(); }
+});
+window.addEventListener('keydown', (ev) => {
+  if (((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'k') ||
+      (ev.key === '/' && document.activeElement !== searchBox &&
+       !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName))) {
+    ev.preventDefault(); searchBox.focus(); searchBox.select();
+  }
 });
 document.getElementById('scope').onchange = refresh;
 document.getElementById('sort').onchange = refresh;
@@ -277,6 +302,25 @@ async function loadTrash() {
   }
 }
 
+// 活文档总览：memory_overview → 直接渲染 Markdown 文本
+const ovview = document.getElementById('overviewview');
+document.getElementById('ovbtn').onclick = () => {
+  const open = ovview.style.display === 'none';
+  ovview.style.display = open ? 'block' : 'none';
+  if (open) loadOverview();
+};
+async function loadOverview() {
+  const st = document.getElementById('ov-status'), body = document.getElementById('ov-body');
+  try {
+    const text = await tool('memory_overview', {});
+    st.textContent = '';
+    body.textContent = text;
+  } catch (err) {
+    st.textContent = '总览生成失败: ' + err.message;
+    st.className = 'status err';
+  }
+}
+
 // 洞察视图：memory_stats → 类型分布 / 近30天写入 / top hits / 遗忘候选
 const insightview = document.getElementById('insightview');
 document.getElementById('insightbtn').onclick = () => {
@@ -299,7 +343,7 @@ async function loadInsight() {
     const days = Object.entries(s.per_day || {});
     const dmax = Math.max(1, ...days.map((x) => x[1]));
     body.innerHTML =
-      '<div class="i-sec"><h3>类型分布（共 ' + s.total + ' 条）</h3>' +
+      '<div class="i-sec"><h3>类型分布（有效 ' + s.total + ' 条' + (s.superseded ? '，已取代 ' + s.superseded + ' 条' : '') + '）</h3>' +
       (types.length ? types.map(([t, n]) => bar(t, n, tmax, 'var(--' + esc(t) + ', var(--accent))')).join('') : '（无记忆）') + '</div>' +
       '<div class="i-sec"><h3>近 30 天写入</h3>' +
       (days.length ? days.map(([d, n]) => bar(d.slice(5), n, dmax)).join('') : '（近 30 天无写入）') + '</div>' +

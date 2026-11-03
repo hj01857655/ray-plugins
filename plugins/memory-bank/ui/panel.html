@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-  <h1>🧠 Memory Bank <span class="ver">v0.9.0</span></h1>
+  <h1>🧠 Memory Bank <span class="ver">v0.9.1</span></h1>
   <select id="scope">
     <option value="all">全部范围</option>
     <option value="global">全局</option>
@@ -16,11 +16,13 @@
   </select>
   <select id="sort">
     <option value="time">按时间</option>
+    <option value="heat">按热度</option>
     <option value="pin">Pin 优先</option>
     <option value="name">按名称</option>
   </select>
   <input id="q" type="search" placeholder="搜索记忆…" />
   <button id="insightbtn" title="洞察：类型分布/热度/遗忘候选">📊</button>
+  <button id="ovbtn" title="活文档总览（跳已取代）">🗂</button>
   <button id="trashbtn" title="回收站">🗑</button>
   <button id="add" class="primary">＋ 新增</button>
   <button id="refresh">刷新</button>
@@ -28,6 +30,11 @@
 <div id="trashview" style="display:none">
   <div class="status" id="trash-status">加载回收站…</div>
   <div id="trash-list"></div>
+  <hr style="border-color:#8883" />
+</div>
+<div id="overviewview" style="display:none">
+  <div class="status" id="ov-status">生成总览…</div>
+  <pre id="ov-body"></pre>
   <hr style="border-color:#8883" />
 </div>
 <div id="insightview" style="display:none">

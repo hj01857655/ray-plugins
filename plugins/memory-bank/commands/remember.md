@@ -8,4 +8,4 @@ argument-hint: <要记住的内容> [--project] [--type user|feedback|project|re
 - 参数含 `--project` → scope=project，否则 global；`--type` 缺省 project
 - 用 MCP `memory_save`（自动拒密、维护索引行、slug 命名）
 - 向用户确认：已存（附 name、scope、路径），重要内容顺手 pin（MCP `memory_pin{name, on: true, scope}`）
-- 保存前先 `memory_search` 查重，更新已有文件优先于新建
+- 保存前先 `memory_search` 查重，更新已有文件优先于新建；若新事实与旧事实矛盾（旧的不该再被召回），用 `memory_supersede{name, by}` 打取代标记而非删除

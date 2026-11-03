@@ -85,6 +85,7 @@ def parse_entry(path: Path) -> dict | None:
     hits_m = re.search(r"^hits:\s*(\d+)", fm, re.M)
     last_hit_m = re.search(r"^last_hit:\s*(\d{4}-\d{2}-\d{2})", fm, re.M)
     related_m = re.search(r"^related:\s*\[([^\]]*)\]", fm, re.M)
+    sup_m = re.search(r"^superseded_by:\s*(.+)$", fm, re.M)
     return {"file": path, "name": (name.group(1).strip() if name else path.stem),
             "description": (desc.group(1).strip() if desc else ""),
             "type": (typ.group(1) if typ else ""),
@@ -93,6 +94,7 @@ def parse_entry(path: Path) -> dict | None:
             "hits": int(hits_m.group(1)) if hits_m else 0,
             "last_hit": last_hit_m.group(1) if last_hit_m else "",
             "related": [x.strip() for x in related_m.group(1).split(",") if x.strip()] if related_m else [],
+            "superseded_by": sup_m.group(1).strip() if sup_m else "",
             "links": sorted(set(LINK_RE.findall(body.lower()))),
             "body": body.strip(), "mtime": path.stat().st_mtime}
 
@@ -100,16 +102,17 @@ def parse_entry(path: Path) -> dict | None:
 def write_entry(root: Path, name: str, mtype: str, description: str, body: str,
                 created: str | None = None, tags: list[str] | None = None,
                 hits: int | None = None, last_hit: str | None = None,
-                related: list[str] | None = None) -> Path:
+                related: list[str] | None = None, superseded_by: str | None = None) -> Path:
     """统一写入格式：save 与 memory_edit 共用，保证 frontmatter 结构一致。"""
     today = datetime.date.today().isoformat()
     desc = " ".join(description.split())   # 描述必须单行，否则 frontmatter 结构被弄破
     tag_line = ("tags: [" + ", ".join(tags) + "]\n") if tags else ""
     heat_line = (f"hits: {hits}\n" if hits else "") + (f"last_hit: {last_hit}\n" if last_hit else "")
     rel_line = ("related: [" + ", ".join(related) + "]\n") if related else ""
+    sup_line = f"superseded_by: {superseded_by}\n" if superseded_by else ""
     text = (f"---\nname: {name}\ndescription: {desc}\n"
             f"{tag_line}metadata:\n  type: {mtype}\ncreated: {created or today}\n"
-            f"{heat_line}{rel_line}---\n\n{body.rstrip()}\n")
+            f"{heat_line}{rel_line}{sup_line}---\n\n{body.rstrip()}\n")
     path = frontmatter_path(root, name)
     path.write_text(text, encoding="utf-8")
     return path
@@ -172,10 +175,10 @@ def _history_append(name: str, old: dict) -> None:
 def history_versions(name: str, scope: str = "global", workspace_path: str | None = None) -> list[dict]:
     """memory_history 数据源：解析 history/<name>.md 的 ## 时间头，旧→新返回。"""
     root = resolve_root(scope, workspace_path)
-    found = [e for e in entries(root) if e["name"].startswith(name)]
+    found = find_entry(root, name)
     if not found:
         return []
-    hist = HISTORY / f"{found[0]['name']}.md"
+    hist = HISTORY / f"{found['name']}.md"
     if not hist.exists():
         return []
     parts = re.split(r"\n## (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\n", hist.read_text(encoding="utf-8"))
@@ -187,10 +190,9 @@ def edit(name: str, text: str | None = None, description: str | None = None,
          workspace_path: str | None = None) -> dict:
     """更新既有记忆：只改给定的字段，保留创建日期与 slug。"""
     root = resolve_root(scope, workspace_path)
-    found = [e for e in entries(root) if e["name"].startswith(name)]
-    if not found:
+    e = find_entry(root, name)
+    if not e:
         raise ValueError(f"未找到: {name}")
-    e = found[0]
     new_type = mtype if mtype in TYPES else (e["type"] or "project")
     new_desc = description if description is not None else e["description"]
     if text is not None:
@@ -205,7 +207,8 @@ def edit(name: str, text: str | None = None, description: str | None = None,
     if text is not None or description is not None:
         _history_append(e["name"], e)   # 只在内容真变了才归档旧版，type/tags 微调不算
     write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"), tags=new_tags,
-                hits=e.get("hits"), last_hit=e.get("last_hit"), related=e.get("related"))
+                hits=e.get("hits"), last_hit=e.get("last_hit"), related=e.get("related"),
+                superseded_by=e.get("superseded_by") or None)
     index_update(root, e["name"], new_desc.split("。")[0][:40], e.get("created") or "")
     return {"name": e["name"], "scope": scope, "description": new_desc}
 
@@ -232,13 +235,13 @@ def search(query: str, scope: str = "all", workspace_path: str | None = None, li
 
 def touch(root: Path, name: str) -> None:
     """命中计数：memory_get/memory_recall 每次命中 hits+1、last_hit 记当天，供加权召回。"""
-    e = next((x for x in entries(root) if x["name"].startswith(name)), None)
+    e = find_entry(root, name)
     if not e:
         return
     write_entry(root, e["name"], e["type"] or "project", e["description"], e["body"],
                 created=e.get("created"), tags=e.get("tags"),
                 hits=e.get("hits", 0) + 1, last_hit=datetime.date.today().isoformat(),
-                related=e.get("related"))
+                related=e.get("related"), superseded_by=e.get("superseded_by") or None)
 
 
 def recall(query: str, scope: str = "all", workspace_path: str | None = None, k: int = 5) -> list[dict]:
@@ -256,8 +259,11 @@ def recall(query: str, scope: str = "all", workspace_path: str | None = None, k:
             except ValueError:
                 pass
         pinned = bool(pins.get(proj if e["scope"] != "global" else glob, {}).get(e["name"]))
-        e["score"] = ((1000 if pinned else 0) + e.get("hits", 0) * 5
-                      + max(0, 30 - min(age, 30)) + (3 if query.lower() in e["name"].lower() else 0))
+        if e.get("superseded_by"):   # Zep 式：被取代的事实沉底但不删（history 里仍是事实）
+            e["score"] = -100 + e.get("hits", 0)
+        else:
+            e["score"] = ((1000 if pinned else 0) + e.get("hits", 0) * 5
+                          + max(0, 30 - min(age, 30)) + (3 if query.lower() in e["name"].lower() else 0))
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:k]
 
@@ -266,16 +272,101 @@ def link(name: str, related: list[str], scope: str = "global",
          workspace_path: str | None = None) -> list[str]:
     """写 related frontmatter 字段：related 名按前缀归一到本根已存在的 slug。"""
     root = resolve_root(scope, workspace_path)
-    found = [e for e in entries(root) if e["name"].startswith(name)]
-    if not found:
+    e = find_entry(root, name)
+    if not e:
         raise ValueError(f"未找到: {name}")
-    e = found[0]
     names = {x["name"] for x in entries(root)}
     rel = sorted({n if n in names else next((m for m in names if m.startswith(n)), n) for n in related})
     write_entry(root, e["name"], e["type"] or "project", e["description"], e["body"],
                 created=e.get("created"), tags=e.get("tags"), hits=e.get("hits"),
-                last_hit=e.get("last_hit"), related=rel)
+                last_hit=e.get("last_hit"), related=rel, superseded_by=e.get("superseded_by") or None)
     return rel
+
+
+def find_entry(root: Path, name: str) -> dict | None:
+    """名字解析：先精确同名，再前缀匹配（取最新）——避免 "a" 误配到 "a-b"。"""
+    es = entries(root)
+    return next((e for e in es if e["name"] == name), None) or \
+           next((e for e in es if e["name"].startswith(name)), None)
+
+
+def supersede(name: str, by: str, scope: str = "global",
+              workspace_path: str | None = None) -> dict:
+    """Zep 式矛盾处理：旧事实不删，打 superseded_by 标记并双向 related；召回时自动沉底。"""
+    root = resolve_root(scope, workspace_path)
+    e = find_entry(root, name)
+    if not e:
+        raise ValueError(f"未找到待取代的记忆: {name}")
+    names = {x["name"] for x in entries(root)}
+    tgt = next((m for m in names if m == by), None) or \
+          next((m for m in names if m.startswith(by)), None)
+    if not tgt:
+        raise ValueError(f"未找到取代者: {by}")
+    if tgt == e["name"]:
+        raise ValueError("不能取代自己")
+    write_entry(root, e["name"], e["type"] or "project", e["description"], e["body"],
+                created=e.get("created"), tags=e.get("tags"), hits=e.get("hits"),
+                last_hit=e.get("last_hit"),
+                related=sorted({*e.get("related", []), tgt}), superseded_by=tgt)
+    ne = next((x for x in entries(root) if x["name"] == tgt), None)   # 反向：新事实 related 到旧事实，演进链可见
+    if ne:
+        write_entry(root, ne["name"], ne["type"] or "project", ne["description"], ne["body"],
+                    created=ne.get("created"), tags=ne.get("tags"), hits=ne.get("hits"),
+                    last_hit=ne.get("last_hit"),
+                    related=sorted({*ne.get("related", []), e["name"]}),
+                    superseded_by=ne.get("superseded_by") or None)
+    index_update(root, e["name"], "[已取代→" + tgt + "] " + e["description"].split("。")[0][:36], "superseded")
+    return {"name": e["name"], "superseded_by": tgt}
+
+
+def unsupersede(name: str, scope: str = "global", workspace_path: str | None = None) -> str:
+    """撤取代标记（错标，或事实重新成立）。"""
+    root = resolve_root(scope, workspace_path)
+    e = find_entry(root, name)
+    if not e:
+        raise ValueError(f"未找到: {name}")
+    write_entry(root, e["name"], e["type"] or "project", e["description"], e["body"],
+                created=e.get("created"), tags=e.get("tags"), hits=e.get("hits"),
+                last_hit=e.get("last_hit"), related=e.get("related"))
+    index_update(root, e["name"], e["description"].split("。")[0][:40], e.get("created") or "")
+    return e["name"]
+
+
+def overview() -> str:
+    """活文档：把全部有效记忆编成可读总览（pin/热度优先，跳已取代），写 REG_DIR/OVERVIEW.md。"""
+    roots = {"global": resolve_root("global", None),
+             "project": resolve_root("project", os.environ.get("ZCODE_PROJECT_DIR") or os.getcwd())}
+    pins = load_pins()
+    items = []
+    for scope, root in roots.items():
+        pk = str(root)
+        for e in entries(root):
+            if e.get("superseded_by"):
+                continue
+            e["scope"] = scope
+            e["pinned"] = bool(pins.get(pk, {}).get(e["name"]))
+            items.append(e)
+    today = datetime.date.today().isoformat()
+    lines = ["# Memory Overview", "",
+             f"> 由 Memory Bank 生成于 {today}，共 {len(items)} 条有效记忆。", ""]
+    for t in list(TYPES) + ["?"]:
+        sel = [e for e in items if (e["type"] or "?") == t]
+        if not sel:
+            continue
+        sel.sort(key=lambda e: (not e["pinned"], -e.get("hits", 0)))
+        lines.append(f"## {t}（{len(sel)}）")
+        lines.append("")
+        for e in sel:
+            rel = ""
+            if e.get("related") or e.get("links"):
+                rel = " → " + ", ".join(sorted({*e.get("related", []), *e.get("links", [])})[:4])
+            lines.append(f"- {'📌 ' if e['pinned'] else ''}[[{e['name']}]]（{e['scope']}）"
+                         f"— {e['description']}" + (f" 🔥{e['hits']}" if e.get("hits") else "") + rel)
+        lines.append("")
+    text = "\n".join(lines)
+    REG_DIR.mkdir(parents=True, exist_ok=True)
+    (REG_DIR / "OVERVIEW.md").write_text(text, encoding="utf-8")
+    return text
 
 
 def forget(name: str, scope: str = "all", workspace_path: str | None = None) -> list[str]:
@@ -375,8 +466,12 @@ def stats() -> dict:
              "project": resolve_root("project", os.environ.get("ZCODE_PROJECT_DIR") or os.getcwd())}
     today = datetime.date.today()
     by_type, per_day, top_hits, stale = {}, {}, [], []
+    superseded = 0
     for scope, root in roots.items():
         for e in entries(root):
+            if e.get("superseded_by"):
+                superseded += 1
+                continue
             t = e["type"] or "?"
             by_type[t] = by_type.get(t, 0) + 1
             day = (e.get("created") or "")[:10]
@@ -388,7 +483,7 @@ def stats() -> dict:
             elif day and (today - datetime.date.fromisoformat(day)).days > 90:
                 stale.append({"name": e["name"], "scope": scope, "created": day,
                               "description": e["description"][:60]})
-    return {"total": sum(by_type.values()), "by_type": by_type,
+    return {"total": sum(by_type.values()), "by_type": by_type, "superseded": superseded,
             "per_day": {d: per_day[d] for d in sorted(per_day)[-30:]},
             "top_hits": sorted(top_hits, key=lambda x: x["hits"], reverse=True)[:8],
             "stale": stale[:10], "pinned": sum(len(v) for v in load_pins().values()),
@@ -457,6 +552,18 @@ TOOLS = [
          "required": ["name", "related"]}},
     {"name": "memory_stats", "description": "全景统计：类型分布/近30天写入/top hits/90天零命中候选",
      "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "memory_supersede", "description": "标记旧事实被新事实取代（Zep 式：不删除，召回自动沉底，两边双向 related）",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "by": {"type": "string"},
+         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
+         "required": ["name", "by"]}},
+    {"name": "memory_unsupersede", "description": "撤销取代标记（错标，或旧事实重新成立）",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"},
+         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
+         "required": ["name"]}},
+    {"name": "memory_overview", "description": "生成活文档总览（按类型汇编有效记忆，跳已取代；写 OVERVIEW.md）",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
 ]
 
 # ui.surfaces 面板资源：宿主经 resources/read 取 ui://memory-bank/panel.html 渲染进沙箱 webview。
@@ -487,6 +594,7 @@ def _items_json(items: list[dict]) -> str:
                         "scope": e["scope"], "body": e["body"], "created": e.get("created", ""),
                         "tags": e.get("tags", []), "hits": e.get("hits", 0),
                         "last_hit": e.get("last_hit", ""), "related": e.get("related", []),
+                        "superseded_by": e.get("superseded_by", ""),
                         "links": e.get("links", []),
                         "pinned": pinned(e["name"], e["scope"])} for e in items],
                        ensure_ascii=True)
@@ -515,7 +623,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.9.0"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.9.1"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
@@ -540,6 +648,7 @@ def _mcp_dispatch(method: str, params: dict):
             return {"content": [{"type": "text", "text": _items_json(items)}]}
         if name == "memory_get":
             found = [e for e in search("", "all", limit=500) if e["name"].startswith(args["name"])]
+            found.sort(key=lambda e: e["name"] != args["name"])   # 精确同名优先于前缀误配
             if not found:
                 raise ValueError(f"未找到: {args['name']}")
             hit = found[0]
@@ -574,6 +683,13 @@ def _mcp_dispatch(method: str, params: dict):
             return {"content": [{"type": "text", "text": f"已关联 {args['name']} → {', '.join(rel)}"}]}
         if name == "memory_stats":
             return {"content": [{"type": "text", "text": json.dumps(stats(), ensure_ascii=True)}]}
+        if name == "memory_supersede":
+            r = supersede(args["name"], args["by"], args.get("scope", "global"))
+            return {"content": [{"type": "text", "text": f"{r['name']} 已标记为被 {r['superseded_by']} 取代（旧事实保留，召回沉底）"}]}
+        if name == "memory_unsupersede":
+            return {"content": [{"type": "text", "text": f"已撤销取代标记: {unsupersede(args['name'], args.get('scope', 'global'))}"}]}
+        if name == "memory_overview":
+            return {"content": [{"type": "text", "text": overview()}]}
         raise ValueError(f"unknown tool: {name}")
     if method == "ping":
         return {}
@@ -595,6 +711,9 @@ def main() -> int:
     sp = sub.add_parser("pin"); sp.add_argument("name"); sp.add_argument("--scope", default="global", choices=["global", "project"])
     sp = sub.add_parser("unpin"); sp.add_argument("name"); sp.add_argument("--scope", default="global", choices=["global", "project"])
     sp = sub.add_parser("stats")
+    sp = sub.add_parser("supersede"); sp.add_argument("name"); sp.add_argument("by"); sp.add_argument("--scope", default="global", choices=["global", "project"])
+    sp = sub.add_parser("unsupersede"); sp.add_argument("name"); sp.add_argument("--scope", default="global", choices=["global", "project"])
+    sp = sub.add_parser("overview")
     a = ap.parse_args()
     try:
         if a.cmd == "save":
@@ -611,6 +730,13 @@ def main() -> int:
             print(f"{a.cmd}ged {a.name} ({a.scope})")
         elif a.cmd == "stats":
             print(json.dumps(stats(), ensure_ascii=False))
+        elif a.cmd == "supersede":
+            r = supersede(a.name, a.by, a.scope)
+            print(f"{r['name']} -> superseded_by {r['superseded_by']}")
+        elif a.cmd == "unsupersede":
+            print(f"cleared: {unsupersede(a.name, a.scope)}")
+        elif a.cmd == "overview":
+            print(overview())
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2

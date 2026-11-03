@@ -114,6 +114,9 @@ button.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transpar
 #toast.err { background: var(--danger); color: #fff; }
 
 /* ── 热度与关联（v0.9） ── */
+.card.sup { opacity: .55; }
+.badge.sup-badge { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .heat { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; white-space: nowrap;
   background: color-mix(in srgb, var(--feedback) 18%, transparent); color: var(--feedback); }
 .related { margin-top: 4px; display: flex; gap: 5px; flex-wrap: wrap; }
@@ -128,6 +131,13 @@ button.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transpar
 .hist-item { margin: 6px 0; }
 .hist-head { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--sub); margin-bottom: 3px; }
 .hist-item pre { max-height: 160px; overflow: auto; margin: 0; }
+
+/* ── 活文档总览 ── */
+#overviewview { margin: 0 14px; }
+#overviewview .status { padding: 10px 4px; }
+#ov-body { white-space: pre-wrap; word-break: break-word; background: var(--card);
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; max-height: 380px; overflow: auto;
+  font: 12px/1.6 ui-monospace, Consolas, monospace; }
 
 /* ── 洞察视图 ── */
 #insightview { margin: 0 14px; }

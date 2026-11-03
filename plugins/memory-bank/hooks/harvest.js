@@ -12,6 +12,9 @@ const crypto = require('node:crypto');
 const HOME = process.env.MEMBANK_HOME || os.homedir();
 const MEM_ROOT = path.join(HOME, '.zcode', 'cli', 'memories');
 const MAX_BODY = 4000;
+// 与引擎 SECRET_RE 对齐：transcript 里的 token 一律不入库
+const SECRET_RE = /(sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{20,}|[A-Fa-f0-9]{32,})/g;
+const scrub = (s) => s.replace(SECRET_RE, '[redacted]');
 
 function projectRoot(cwd) {
   const normalized = path.resolve(cwd);
@@ -48,7 +51,7 @@ function extractPoints(lines) {
     text = (text || '').replace(/\s+/g, ' ').trim();
     if (text.length < 12) continue;                                    // 太短没营养
     if (/^<(system-reminder|local-command|command)/i.test(text)) continue;
-    pts.push(who + ': ' + text.slice(0, 200));
+    pts.push(who + ': ' + scrub(text.slice(0, 200)));
     if (pts.length >= 12) break;
   }
   return pts;
