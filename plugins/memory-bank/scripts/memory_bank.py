@@ -384,9 +384,20 @@ def crystallize(max_candidates: int = 5) -> dict:
     inbox = _evolve_dir() / "inbox.jsonl"
     if not inbox.exists():
         return {"candidates": 0, "skipped": 0}
-    seen_sessions = {json.loads(l)["session"] for l in inbox.read_text(encoding="utf-8").splitlines() if l.strip()}
+        seen_sessions = set()
+    for l in inbox.read_text(encoding="utf-8").splitlines():
+        try:
+            seen_sessions.add(json.loads(l)["session"])
+        except Exception:
+            pass
     processed = _evolve_dir() / "processed.jsonl"
-    done = {json.loads(l)["session"] for l in processed.read_text(encoding="utf-8").splitlines()} if processed.exists() else set()
+    done = set()
+    if processed.exists():
+        for l in processed.read_text(encoding="utf-8").splitlines():
+            try:
+                done.add(json.loads(l)["session"])
+            except Exception:
+                pass
     todo = seen_sessions - done
     root = resolve_root("global", None)
     made = 0
@@ -950,12 +961,12 @@ def main() -> int:
         elif a.cmd == "unsupersede":
             print(f"cleared: {unsupersede(a.name, a.scope)}")
         if a.cmd == "capture":
-        print(json.dumps(capture(a.session, a.note), ensure_ascii=False)); return 0
-    if a.cmd == "crystallize":
-        print(json.dumps(crystallize(a.max), ensure_ascii=False)); return 0
-    if a.cmd == "promote":
-        print(json.dumps(promote(a.name), ensure_ascii=False)); return 0
-    if a.cmd == "dream":
+            print(json.dumps(capture(a.session, a.note), ensure_ascii=False)); return 0
+        elif a.cmd == "crystallize":
+            print(json.dumps(crystallize(a.max), ensure_ascii=False)); return 0
+        elif a.cmd == "promote":
+            print(json.dumps(promote(a.name), ensure_ascii=False)); return 0
+        elif a.cmd == "dream":
             r = dream(a.dry, a.decay_days)
             print(json.dumps({"dry": r["dry"], "dedup": len(r["dedup"]), "decay": len(r["decay"]), "link": len(r["link"])}, ensure_ascii=False))
             return 0
