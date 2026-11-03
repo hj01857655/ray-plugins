@@ -78,20 +78,23 @@ def parse_entry(path: Path) -> dict | None:
     desc = re.search(r"^description:\s*(.+)$", fm, re.M)
     typ = re.search(r"^\s*type:\s*(\w+)", fm, re.M)
     created = re.search(r"^created:\s*(\d{4}-\d{2}-\d{2})", fm, re.M)
+    tags = re.search(r"^tags:\s*\[([^\]]*)\]", fm, re.M)
     body_created = re.search(r"记录于 (\d{4}-\d{2}-\d{2})", body)
     return {"file": path, "name": (name.group(1).strip() if name else path.stem),
             "description": (desc.group(1).strip() if desc else ""),
             "type": (typ.group(1) if typ else ""),
             "created": (created.group(1) if created else body_created.group(1) if body_created else ""),
+            "tags": [x.strip().strip("'\"") for x in tags.group(1).split(",") if x.strip()] if tags else [],
             "body": body.strip(), "mtime": path.stat().st_mtime}
 
 
 def write_entry(root: Path, name: str, mtype: str, description: str, body: str,
-                created: str | None = None) -> Path:
+                created: str | None = None, tags: list[str] | None = None) -> Path:
     """统一写入格式：save 与 memory_edit 共用，保证 frontmatter 结构一致。"""
     today = datetime.date.today().isoformat()
+    tag_line = ("tags: [" + ", ".join(tags) + "]\n") if tags else ""
     text = (f"---\nname: {name}\ndescription: {description}\n"
-            f"metadata:\n  type: {mtype}\ncreated: {created or today}\n---\n\n{body.rstrip()}\n")
+            f"{tag_line}metadata:\n  type: {mtype}\ncreated: {created or today}\n---\n\n{body.rstrip()}\n")
     path = frontmatter_path(root, name)
     path.write_text(text, encoding="utf-8")
     return path
@@ -121,7 +124,7 @@ def index_update(root: Path, name: str, title: str, hook: str, remove: bool = Fa
 
 def save(text: str, mtype: str = "project", scope: str = "global",
          workspace_path: str | None = None, name: str | None = None,
-         description: str | None = None) -> dict:
+         description: str | None = None, tags: list[str] | None = None) -> dict:
     if SECRET_RE.search(text):
         raise ValueError("内容疑似凭据/token，拒绝写入；请先脱敏")
     if mtype not in TYPES:
@@ -138,13 +141,13 @@ def save(text: str, mtype: str = "project", scope: str = "global",
         body = text.strip()
     else:
         body = f"{text.strip()}\n\n**Why:** {desc}\n**How to apply:** 记录于 {today}"
-    write_entry(root, nm, mtype, desc, body, created=today)
+    write_entry(root, nm, mtype, desc, body, created=today, tags=tags)
     index_update(root, nm, desc.split("。")[0][:40], today)
     return {"name": nm, "path": str(frontmatter_path(root, nm)), "scope": scope}
 
 
 def edit(name: str, text: str | None = None, description: str | None = None,
-         mtype: str | None = None, scope: str = "global",
+         mtype: str | None = None, tags: list[str] | None = None, scope: str = "global",
          workspace_path: str | None = None) -> dict:
     """更新既有记忆：只改给定的字段，保留创建日期与 slug。"""
     root = resolve_root(scope, workspace_path)
@@ -161,7 +164,8 @@ def edit(name: str, text: str | None = None, description: str | None = None,
         base = re.sub(r"\n\n\*\*Why:\*\*[\s\S]*$", "", e["body"])
         new_body = base if new_type in ("user", "reference") else \
             f"{base}\n\n**Why:** {new_desc}\n**How to apply:** 记录于 {e.get('created') or datetime.date.today().isoformat()}"
-    write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"))
+    new_tags = sorted(set((e.get("tags") or []) | set(tags or []))) if tags is not None else e.get("tags")
+    write_entry(root, e["name"], new_type, new_desc, new_body, created=e.get("created"), tags=new_tags)
     index_update(root, e["name"], new_desc.split("。")[0][:40], e.get("created") or "")
     return {"name": e["name"], "scope": scope, "description": new_desc}
 
@@ -191,10 +195,64 @@ def forget(name: str, scope: str = "all", workspace_path: str | None = None) -> 
             if e["name"].startswith(name):
                 TRASH.mkdir(parents=True, exist_ok=True)   # trash 在记忆根之外，引擎 manifest 不会扫到
                 stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-                shutil.move(str(e["file"]), str(TRASH / f"{stamp}-{e['file'].name}"))
+                trash_name = f"{stamp}-{e['file'].name}"
+                shutil.move(str(e["file"]), str(TRASH / trash_name))
                 index_update(root, e["name"], "", "", remove=True)
+                # 副账本：记录原始归属，restore 时按图索骥
+                trash_log(TRASH, {"id": f"{stamp}-{s}", "name": e["name"], "scope": s,
+                                  "root": str(root), "trash_file": trash_name,
+                                  "deleted_at": stamp})
                 removed.append(f"{s}:{e['name']}")
     return removed
+
+
+def trash_log(trash_dir: Path, entry: dict | None = None) -> list[dict]:
+    """trash 副账本（JSONL 追加）：记录每条删除的原始位置，支撑面板内恢复。"""
+    log = trash_dir / "index.jsonl"
+    if entry is not None:
+        trash_dir.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+    out = []
+    if log.exists():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+def restore(name: str) -> list[str]:
+    """从 trash 恢复最近删除的匹配条目：文件移回原记忆根并补回索引行。"""
+    done = []
+    for entry in reversed(trash_log(TRASH)):   # 最新优先
+        if entry.get("name", "").startswith(name) or entry.get("id", "").startswith(name):
+            src = TRASH / entry["trash_file"]
+            if not src.exists():
+                continue
+            root = Path(entry["root"])
+            root.mkdir(parents=True, exist_ok=True)
+            dest = frontmatter_path(root, entry["name"])
+            if dest.exists():
+                continue   # 同名已存在（可能已重写），不覆盖
+            shutil.move(str(src), str(dest))
+            index_update(root, entry["name"], (parse_entry(dest) or {}).get("description", ""),
+                         entry.get("deleted_at", "")[:4] + "")
+            done.append(f"{entry['scope']}:{entry['name']}")
+    return done
+
+
+def trash_items() -> list[dict]:
+    """列出回收站现存条目（文件还在的才有意义）。"""
+    out = []
+    for entry in reversed(trash_log(TRASH)):
+        src = TRASH / entry.get("trash_file", "")
+        if src.exists():
+            out.append({"id": entry["id"], "name": entry["name"], "scope": entry["scope"],
+                        "deleted_at": entry.get("deleted_at", ""),
+                        "description": (parse_entry(src) or {}).get("description", "")})
+    return out
 
 
 def load_pins() -> dict:
@@ -260,6 +318,10 @@ TOOLS = [
          "description": {"type": "string"}, "type": {"type": "string", "enum": list(TYPES)},
          "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
          "required": ["name"]}},
+    {"name": "memory_trash", "description": "列出回收站现存条目（面板回收站视图数据源）",
+     "inputSchema": {"type": "object", "properties": {}, "required": []}},
+    {"name": "memory_restore", "description": "从回收站恢复误删记忆（按 name 或 id 前缀）",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
     {"name": "memory_pin", "description": "置顶/取消置顶记忆（pin 过的每会话确定性注入）",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string"}, "on": {"type": "boolean", "default": True},
@@ -283,6 +345,7 @@ def _is_pinned(name: str, scope: str) -> bool:
 def _items_json(items: list[dict]) -> str:
     return json.dumps([{"name": e["name"], "description": e["description"], "type": e["type"],
                         "scope": e["scope"], "body": e["body"], "created": e.get("created", ""),
+                        "tags": e.get("tags", []),
                         "pinned": _is_pinned(e["name"], e["scope"])} for e in items],
                        ensure_ascii=True)
 
@@ -310,7 +373,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.4.0"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.6.0"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
@@ -324,7 +387,8 @@ def _mcp_dispatch(method: str, params: dict):
     if method == "tools/call":
         name, args = params.get("name", ""), params.get("arguments") or {}
         if name == "memory_save":
-            r = save(args["text"], args.get("type", "project"), args.get("scope", "global"))
+            r = save(args["text"], args.get("type", "project"), args.get("scope", "global"),
+                     tags=args.get("tags"))
             return {"content": [{"type": "text", "text": f"已保存 {r['name']} ({r['scope']}) → {r['path']}"}]}
         if name == "memory_search":
             items = search(args.get("query", ""), args.get("scope", "all"))
@@ -339,12 +403,17 @@ def _mcp_dispatch(method: str, params: dict):
             return {"content": [{"type": "text", "text": found[0]["body"]}]}
         if name == "memory_edit":
             r = edit(args["name"], args.get("text"), args.get("description"),
-                     args.get("type"), args.get("scope", "global"))
+                     args.get("type"), args.get("tags"), args.get("scope", "global"))
             return {"content": [{"type": "text", "text": f"已更新 {r['name']} ({r['scope']})"}]}
         if name == "memory_pin":
             set_pin(args["name"], args.get("on", True), args.get("scope", "global"))
             return {"content": [{"type": "text",
                                  "text": f"{'pinned' if args.get('on', True) else 'unpinned'} {args['name']}"}]}
+        if name == "memory_trash":
+            return {"content": [{"type": "text", "text": json.dumps(trash_items(), ensure_ascii=True)}]}
+        if name == "memory_restore":
+            done = restore(args["name"])
+            return {"content": [{"type": "text", "text": f"已恢复 {len(done)}: {', '.join(done)}" if done else "未找到可恢复条目"}]}
         if name == "memory_forget":
             gone = forget(args["name"])
             return {"content": [{"type": "text", "text": f"已删除 {len(gone)}: {', '.join(gone)}" if gone else "未找到"}]}

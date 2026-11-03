@@ -28,6 +28,7 @@
   .badge.t-feedback { color: #e67e22; border-color: #e67e2266; }
   .badge.t-project { color: #27ae60; border-color: #27ae6066; }
   .badge.t-reference { color: #8e44ad; border-color: #8e44ad66; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: #4a7dff22; color: #7aa3ff; }
   .card .date { font-size: 11px; color: #888; margin-left: auto; }
   .card .desc { color: #888; margin-top: 2px; }
   .card pre { white-space: pre-wrap; word-break: break-word; background: #8881; border-radius: 6px; padding: 8px; margin: 8px 0 6px; }
@@ -49,10 +50,22 @@
     <option value="global">全局</option>
     <option value="project">项目</option>
   </select>
+  <select id="sort">
+    <option value="time">按时间</option>
+    <option value="pin">Pin 优先</option>
+    <option value="name">按名称</option>
+  </select>
   <input id="q" type="search" placeholder="搜索记忆…" />
+  <button id="trashbtn" title="回收站">🗑</button>
   <button id="add" class="primary">＋ 新增</button>
   <button id="refresh">刷新</button>
 </header>
+<div id="trashview" style="display:none">
+  <div class="status" id="trash-status">加载回收站…</div>
+  <div id="trash-list"></div>
+  <hr style="border-color:#8883" />
+</div>
+<footer id="stats" style="color:#888;font-size:11px;margin:8px 2px"></footer>
 <div id="form">
   <div class="f"><input id="f-desc" placeholder="一句话描述（用于索引和召回）" /></div>
   <textarea id="f-text" placeholder="记忆正文…"></textarea>
@@ -125,10 +138,18 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s == 
 async function refresh() {
   const q = document.getElementById('q').value.trim();
   const scope = document.getElementById('scope').value;
+  const sort = document.getElementById('sort').value;
   const list = document.getElementById('list');
   list.innerHTML = '<div class="status">加载中…</div>';
   try {
     const items = JSON.parse(await tool('memory_list', { query: q, scope }));
+    items.sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name)
+      : sort === 'pin' ? ((b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)) || String(b.created).localeCompare(String(a.created))
+      : String(b.created).localeCompare(String(a.created)));
+    const st = document.getElementById('stats');
+    st.textContent = items.length + ' 条 · 全局 ' + items.filter(i => i.scope === 'global').length +
+      ' · 项目 ' + items.filter(i => i.scope !== 'global').length +
+      ' · 📌 ' + items.filter(i => i.pinned).length;
     if (!items.length) { list.innerHTML = '<div class="status">（暂无记忆）</div>'; return; }
     list.innerHTML = '';
     for (const it of items) {
@@ -141,9 +162,12 @@ async function refresh() {
         '<span class="badge">' + esc(it.scope) + '</span>' +
         (it.created ? '<span class="date">' + esc(it.created) + '</span>' : '') + '</div>' +
         '<div class="desc">' + esc(it.description) + '</div>' +
+        ((it.tags && it.tags.length) ? '<div style="margin-top:4px">' +
+          it.tags.map((t) => '<span class="tag">#' + esc(t) + '</span>').join(' ') + '</div>' : '') +
         '<pre style="display:none">' + esc(it.body) + '</pre>' +
         '<div class="edit" style="display:none">' +
         '<div class="f"><input class="e-desc" value="' + esc(it.description) + '" placeholder="描述"/></div>' +
+        '<div class="f"><input class="e-tags" value="' + esc((it.tags || []).join(', ')) + '" placeholder="标签，逗号分隔"/></div>' +
         '<textarea class="e-text">' + esc(it.body) + '</textarea></div>' +
         '<div class="ops">' +
         '<button data-op="edit">编辑</button>' +
@@ -167,7 +191,8 @@ async function refresh() {
       btn('save').onclick = async () => {
         try {
           await tool('memory_edit', { name: it.name, scope: it.scope,
-            text: card.querySelector('.e-text').value, description: card.querySelector('.e-desc').value });
+            text: card.querySelector('.e-text').value, description: card.querySelector('.e-desc').value,
+            tags: card.querySelector('.e-tags').value.split(',').map((s) => s.trim()).filter(Boolean) });
           refresh();
         } catch (err) { alert('保存失败: ' + err.message); }
       };
@@ -210,7 +235,43 @@ document.getElementById('q').addEventListener('input', () => {
   debounce = setTimeout(refresh, 300);
 });
 document.getElementById('scope').onchange = refresh;
+document.getElementById('sort').onchange = refresh;
 document.getElementById('refresh').onclick = refresh;
+
+// 回收站视图
+const trashview = document.getElementById('trashview');
+document.getElementById('trashbtn').onclick = () => {
+  trashview.style.display = trashview.style.display === 'none' ? 'block' : 'none';
+  if (trashview.style.display === 'block') loadTrash();
+};
+async function loadTrash() {
+  const tl = document.getElementById('trash-list');
+  const st = document.getElementById('trash-status');
+  try {
+    const items = JSON.parse(await tool('memory_trash', {}));
+    if (!items.length) { st.textContent = '（回收站为空）'; tl.innerHTML = ''; return; }
+    st.textContent = '回收站 ' + items.length + ' 条：';
+    tl.innerHTML = '';
+    for (const t of items) {
+      const row = document.createElement('div');
+      row.className = 'card';
+      row.innerHTML =
+        '<div class="head"><span class="name">' + esc(t.name) + '</span>' +
+        '<span class="badge">' + esc(t.scope) + '</span>' +
+        '<span class="date">' + esc(t.deleted_at) + '</span></div>' +
+        '<div class="desc">' + esc(t.description) + '</div>' +
+        '<div class="ops"><button class="primary">恢复</button></div>';
+      row.querySelector('button').onclick = async () => {
+        try { await tool('memory_restore', { name: t.name }); loadTrash(); refresh(); }
+        catch (err) { alert('恢复失败: ' + err.message); }
+      };
+      tl.appendChild(row);
+    }
+  } catch (err) {
+    st.textContent = '回收站加载失败: ' + err.message;
+    st.className = 'status err';
+  }
+}
 
 connect().then(refresh).catch((err) => {
   document.getElementById('list').innerHTML =

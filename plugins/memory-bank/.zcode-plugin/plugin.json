@@ -1,6 +1,6 @@
 {
   "name": "memory-bank",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Bridge to ZCode's built-in file-based memory: MCP tools and commands write frontmatter memory files into the native memories/ store (auto-extraction, semantic recall and dream consolidation apply), plus pin registry and SessionStart hook for deterministic injection.",
   "author": {
     "name": "Ray"
