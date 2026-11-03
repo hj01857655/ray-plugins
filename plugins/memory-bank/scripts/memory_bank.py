@@ -384,7 +384,7 @@ def crystallize(max_candidates: int = 5) -> dict:
     inbox = _evolve_dir() / "inbox.jsonl"
     if not inbox.exists():
         return {"candidates": 0, "skipped": 0}
-        seen_sessions = set()
+    seen_sessions = set()
     for l in inbox.read_text(encoding="utf-8").splitlines():
         try:
             seen_sessions.add(json.loads(l)["session"])
