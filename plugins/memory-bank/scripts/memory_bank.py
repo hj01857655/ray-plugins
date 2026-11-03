@@ -394,7 +394,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.7.3"}}
+                "serverInfo": {"name": "memory-bank", "version": "0.8.0"}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}

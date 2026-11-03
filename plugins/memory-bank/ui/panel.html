@@ -8,7 +8,7 @@
 </head>
 <body>
 <header>
-  <h1>🧠 Memory Bank</h1>
+  <h1>🧠 Memory Bank <span class="ver">v0.8.0</span></h1>
   <select id="scope">
     <option value="all">全部范围</option>
     <option value="global">全局</option>
@@ -29,7 +29,7 @@
   <div id="trash-list"></div>
   <hr style="border-color:#8883" />
 </div>
-<footer id="stats" style="color:#888;font-size:11px;margin:8px 2px"></footer>
+<footer id="statsbar"><span><b id="st-total">0</b>条</span><span><b id="st-global">0</b>全局</span><span><b id="st-proj">0</b>项目</span><span><b id="st-pin">0</b>📌</span></footer>
 <div id="form">
   <div class="f"><input id="f-desc" placeholder="一句话描述（用于索引和召回）" /></div>
   <textarea id="f-text" placeholder="记忆正文…"></textarea>
@@ -49,6 +49,7 @@
   </div>
 </div>
 <div id="list"><div class="status">连接中…</div></div>
+<div id="toast"></div>
 <script>
 /*INLINE:panel.js*/
 </script>
