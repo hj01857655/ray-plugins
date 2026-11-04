@@ -817,6 +817,12 @@ PANEL_URI = "ui://memory-bank/panel.html"
 PANEL_DIR = Path(__file__).resolve().parent.parent / "ui"
 
 
+def _plugin_version() -> str:
+    try:   # 版本单一来源：plugin.json（发版不再手填 serverInfo）
+        return json.loads((Path(__file__).resolve().parents[1] / ".zcode-plugin" / "plugin.json").read_text(encoding="utf-8")).get("version", "0")
+    except (OSError, ValueError):
+        return "0"
+
 def render_panel() -> str:
     html = (PANEL_DIR / "panel.html").read_text(encoding="utf-8")
     for tag in ("panel.css", "panel.js"):
@@ -868,7 +874,7 @@ def handle_mcp() -> None:
 def _mcp_dispatch(method: str, params: dict):
     if method == "initialize":
         return {"protocolVersion": PROTOCOL, "capabilities": {"tools": {}, "resources": {}},
-                "serverInfo": {"name": "memory-bank", "version": "0.9.1"}}
+                "serverInfo": {"name": "memory-bank", "version": _plugin_version()}}
     if method == "resources/list":
         return {"resources": [{"uri": PANEL_URI, "name": "Memory Bank Panel",
                                "mimeType": "text/html"}]}
