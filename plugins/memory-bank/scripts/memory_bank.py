@@ -160,6 +160,13 @@ def save(text: str, mtype: str = "project", scope: str = "global",
         if topic and len(topic) >= 2:
             tags = ["topic:" + topic[:40]]
     nm = name or slugify(text)
+    # save 撞名护栏：slug 只取前 4 词，同前缀不同内容的两条事实必然同 slug——
+    # 旧版全文先归档 history（与 edit 同机制），覆盖不再静默丢数据（v0.9.7）。
+    fp0 = frontmatter_path(root, nm)
+    if fp0.exists():
+        old = parse_entry(fp0)
+        if old and text.strip()[:80].lower() not in old["body"].lower():
+            _history_append(nm, old)
     today = datetime.date.today().isoformat()
     desc = description or text.strip().replace("\n", " ")[:100]
     if mtype in ("user", "reference"):
