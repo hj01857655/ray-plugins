@@ -152,6 +152,13 @@ def save(text: str, mtype: str = "project", scope: str = "global",
         # 引擎约定 memory 是目录；被同名文件占据说明是旧工具写入的产物，拒绝覆盖并提示
         raise ValueError(f"记忆根被同名文件占据（引擎无法读取）：{root}；请先移走该文件")
     root.mkdir(parents=True, exist_ok=True)
+    # 跨会话隔离①写入侧：全局条目自动带上来源话题 tag（当前工程目录名），
+    # 召回侧可按话题软降权——global 大池不再是无差别可见。
+    if scope == "global" and not tags:
+        proj = os.environ.get("ZCODE_PROJECT_DIR") or os.getcwd()
+        topic = os.path.basename(proj.replace("\\", "/").rstrip("/")).lower()
+        if topic and len(topic) >= 2:
+            tags = ["topic:" + topic[:40]]
     nm = name or slugify(text)
     today = datetime.date.today().isoformat()
     desc = description or text.strip().replace("\n", " ")[:100]
@@ -270,13 +277,20 @@ def touch(root: Path, name: str) -> None:
                 related=e.get("related"), superseded_by=e.get("superseded_by") or None)
 
 
-def recall(query: str, scope: str = "all", workspace_path: str | None = None, k: int = 5) -> list[dict]:
-    """加权召回：pin 置顶 ≫ 热度 ≫ 新近度 ≫ 标题命中；Agent 找上下文的入口。"""
+def recall(query: str, scope: str = "all", workspace_path: str | None = None, k: int = 5,
+           tags: list[str] | None = None, topic: str | None = None) -> list[dict]:
+    """加权召回：pin 置顶 ≫ 热度 ≫ 新近度 ≫ 标题命中；Agent 找上下文的入口。
+    跨会话隔离②召回侧：tags 硬过滤（任一命中才保留）；topic 软降权——
+    带其它 topic: 标签且与当前话题无关的条目 -50 分（不绝交，跨项目经验仍可捞回）。"""
     items = search(query, scope, workspace_path, limit=500)
+    if tags:
+        tl = [t.lower() for t in tags]
+        items = [e for e in items if any(t in [x.lower() for x in (e.get("tags") or [])] for t in tl)]
     pins = load_pins()
     proj = str(resolve_root("project", workspace_path or os.environ.get("ZCODE_PROJECT_DIR")))
     glob = str(resolve_root("global", None))
     today = datetime.date.today()
+    topic_l = ("topic:" + topic.lower()) if topic else None
     for e in items:
         age = 30
         if e.get("created"):
@@ -291,6 +305,13 @@ def recall(query: str, scope: str = "all", workspace_path: str | None = None, k:
             e["score"] = ((1000 if pinned else 0) + e.get("hits", 0) * 5
                           + max(0, 30 - min(age, 30)) + (3 if query.lower() in e["name"].lower() else 0)
                           + e.get("tok_hits", 0) * 10)
+        if topic_l:
+            etags = [x.lower() for x in (e.get("tags") or [])]
+            entry_topics = [x for x in etags if x.startswith("topic:")]
+            if entry_topics and topic_l not in entry_topics:
+                e["score"] -= 50      # 别的会话弧线 → 重罚但可翻盘
+            elif topic_l in entry_topics:
+                e["score"] += 20      # 本话题 → 置顶倾向
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:k]
 
@@ -705,10 +726,11 @@ def render(items: list[dict]) -> str:
 # ---------- MCP ----------
 
 TOOLS = [
-    {"name": "memory_save", "description": "保存一条事实到 ZCode 内置记忆（一事实一文件+索引行）；type: user/feedback/project/reference",
+    {"name": "memory_save", "description": "保存一条事实到 ZCode 内置记忆（一事实一文件+索引行）；type: user/feedback/project/reference；global 条目自动带 topic:<来源目录名> 标签防跨会话串味，可显式 tags 覆盖",
      "inputSchema": {"type": "object", "properties": {
          "text": {"type": "string"}, "type": {"type": "string", "enum": list(TYPES), "default": "project"},
-         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"}},
+         "scope": {"type": "string", "enum": ["global", "project"], "default": "global"},
+         "tags": {"type": "array", "items": {"type": "string"}}},
          "required": ["text"]}},
     {"name": "memory_search", "description": "按关键词检索内置记忆（空关键词=列出全部；支持 tag 过滤）",
      "inputSchema": {"type": "object", "properties": {
@@ -740,10 +762,12 @@ TOOLS = [
          "required": ["name"]}},
     {"name": "memory_forget", "description": "按 name 前缀删除记忆文件（移入 trash，可回溯）",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
-    {"name": "memory_recall", "description": "加权召回：pin ≫ 热度 ≫ 新近度；返回 top-k（含命中计数），Agent 找上下文用这个而不是 memory_search",
+    {"name": "memory_recall", "description": "加权召回：pin ≫ 热度 ≫ 新近度；返回 top-k（含命中计数），Agent 找上下文用这个而不是 memory_search。跨会话隔离：tags 硬过滤；topic 传当前工程目录名软降权他弧线条目",
      "inputSchema": {"type": "object", "properties": {
          "query": {"type": "string"}, "k": {"type": "integer", "default": 5},
-         "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"}},
+         "scope": {"type": "string", "enum": ["all", "global", "project"], "default": "all"},
+         "tags": {"type": "array", "items": {"type": "string"}},
+         "topic": {"type": "string"}},
          "required": ["query"]}},
     {"name": "memory_history", "description": "查看记忆的编辑版本史（每次改版前旧全文自动归档）",
      "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
@@ -879,7 +903,8 @@ def _mcp_dispatch(method: str, params: dict):
             gone = forget(args["name"], args.get("scope", "all"))
             return {"content": [{"type": "text", "text": f"已删除 {len(gone)}: {', '.join(gone)}" if gone else "未找到"}]}
         if name == "memory_recall":
-            items = recall(args.get("query", ""), args.get("scope", "all"), k=args.get("k", 5))
+            items = recall(args.get("query", ""), args.get("scope", "all"), k=args.get("k", 5),
+                           tags=args.get("tags"), topic=args.get("topic"))
             if args.get("query", "").strip():   # 命中计数：recall 也是一次命中（原实现只在 memory_get 计数）
                 for e in items[:3]:
                     touch(resolve_root("project" if e["scope"] != "global" else "global", None), e["name"])
