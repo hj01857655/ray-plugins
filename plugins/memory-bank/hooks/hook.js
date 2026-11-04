@@ -48,6 +48,15 @@ function entryPath(root, name) {
   return p.startsWith(root) ? p : null;
 }
 
+function frontmatterTags(p) {
+  // 读文件 frontmatter 的 tags 行（engine 0.9.6 起写入 topic:<来源目录名>）；读不到返回 []
+  try {
+    const m = fs.readFileSync(p, 'utf8').match(/^---\s*\n([\s\S]*?)\n---/);
+    const t = m && m[1].match(/^tags:\s*\[([^\]]*)\]/m);
+    return t ? t[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : [];
+  } catch { return []; }
+}
+
 let payload = {};
 try { payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch { /* stdin 可能为空 */ }
 const cwd = process.env.ZCODE_PROJECT_DIR || payload.cwd || process.cwd();
@@ -67,12 +76,28 @@ for (const [rootKey, names] of Object.entries(pins)) {
   }
 }
 // MEMORY.md 索引行注入（global + 当前项目）：引擎开关关闭时由本 hook 代行 default-index 职责
-for (const [label, root] of [['global', path.join(MEM_ROOT, 'global', 'memory')], [`项目 ${path.basename(cwd)}`, projectRoot(cwd)]]) {
+// v4 防串台（对齐 engine 0.9.6/0.9.8 召回语义）：global 段不再无条件全量灌——
+//   pinned 放行；tags 带 candidate 硬排除（0.9.8）；其余须 topic 匹配当前 workspace（0.9.6）；
+//   无 topic 的跨项目老条目不进确定性注入，留给 /recall 按需。项目根按 workspace 天然隔离，照旧。
+const myTopic = 'topic:' + path.basename(path.resolve(cwd)).slice(0, 40);
+for (const [label, root, isGlobal] of [['global', path.join(MEM_ROOT, 'global', 'memory'), true], [`项目 ${path.basename(cwd)}`, projectRoot(cwd), false]]) {
   let idx = '';
   try { idx = fs.readFileSync(path.join(root, 'MEMORY.md'), 'utf8'); } catch { continue; }
-  const items = idx.split(/\r?\n/).filter((l) => l.startsWith('- ['))
+  let items = idx.split(/\r?\n/).filter((l) => l.startsWith('- ['))
     // pin 过的记忆已有全文注入，索引行去重（只按本根 pin 集合滤，防跨根同名误伤）
     .filter((l) => !pinnedNames(root).has(l.match(/\]\(([^)]+)\)/)?.[1]?.replace(/\.md$/, '')));
+  if (isGlobal) {
+    items = items.filter((l) => {
+      const fname = l.match(/\]\(([^)]+)\)/)?.[1];
+      if (!fname) return false;
+      const tags = frontmatterTags(path.join(root, fname));
+      if (tags.includes('candidate')) return false;                 // 0.9.8：未晋升候选不进任何注入面
+      if (pinnedNames(root).has(fname.replace(/\.md$/, ''))) return true;  // pinned 恒在场
+      const topics = tags.filter((t) => t.startsWith('topic:'));
+      if (!topics.length) return false;                             // 无来源标记的老条目：不串台，/recall 可查
+      return topics.includes(myTopic);                              // 0.9.6：topic 硬过滤
+    });
+  }
   if (!items.length) continue;
   const chunk = `记忆索引（${label}）：\n` + items.join('\n');
   if (used + chunk.length > MAX_CHARS) { lines.push(`- …（${label} 索引超预算，用 /recall 查询）`); break; }
