@@ -284,6 +284,7 @@ def touch(root: Path, name: str) -> None:
                 related=e.get("related"), superseded_by=e.get("superseded_by") or None)
 
 
+B4 = chr(92)   # 反斜杠常量：正则里 \s 用 B4+'s' 构造
 def recall(query: str, scope: str = "all", workspace_path: str | None = None, k: int = 5,
            tags: list[str] | None = None, topic: str | None = None) -> list[dict]:
     """加权召回：pin 置顶 ≫ 热度 ≫ 新近度 ≫ 标题命中；Agent 找上下文的入口。
@@ -320,10 +321,13 @@ def recall(query: str, scope: str = "all", workspace_path: str | None = None, k:
         if topic_l:
             etags = [x.lower() for x in (e.get("tags") or [])]
             entry_topics = [x for x in etags if x.startswith("topic:")]
-            if entry_topics and topic_l not in entry_topics:
-                e["score"] -= 50      # 别的会话弧线 → 重罚但可翻盘
+            # v0.9.10：只有"工作区来源形"标签（draft-/default-/mem- 前缀，save 自动打）
+            # 参与降权；手工项目主题标（topic:agent-purge 等）中性，长命知识不被误杀
+            origins = [x for x in entry_topics if re.match(r"topic:(draft-|default-|mem-)", x)]
+            if origins and topic_l not in origins:
+                e["score"] -= 50      # 别的会话弧线的工作记录 → 重罚但可翻盘
             elif topic_l in entry_topics:
-                e["score"] += 20      # 本话题 → 置顶倾向
+                e["score"] += 20      # 本会话来源 → 置顶倾向
     items.sort(key=lambda x: x["score"], reverse=True)
     return items[:k]
 
