@@ -293,6 +293,11 @@ def recall(query: str, scope: str = "all", workspace_path: str | None = None, k:
     if tags:
         tl = [t.lower() for t in tags]
         items = [e for e in items if any(t in [x.lower() for x in (e.get("tags") or [])] for t in tl)]
+    # candidate 门控：未晋升的结晶候选默认从召回面硬隔离（它们是流水线原料，
+    # 跨话题入池就是串台污染面）；显式 tags 含 "candidate" 时才放行。
+    want_cand = bool(tags) and any("candidate" in t.lower() for t in tags)
+    if not want_cand:
+        items = [e for e in items if "candidate：未晋升" not in (e.get("body") or "")]
     pins = load_pins()
     proj = str(resolve_root("project", workspace_path or os.environ.get("ZCODE_PROJECT_DIR")))
     glob = str(resolve_root("global", None))
@@ -457,11 +462,8 @@ def crystallize(max_candidates: int = 5) -> dict:
             if find_entry(root, name):
                 continue
             write_entry(root, name, "reference", "候选：" + val[:60],
-                        f"crystallize 自 {sid[:12]} 提取的证据：{val}" + chr(10) + chr(10) + "> " + chr(0x23F3) + " candidate：未晋升。晋升用 memory_promote，淘汰直接 forget。")
-            # candidate 标记写进正文尾（frontmatter metadata 由 write_entry 固定，不动核心结构）
-            fp = frontmatter_path(root, name)
-            t = fp.read_text(encoding="utf-8")
-            pass   # 标记已随 body 写入（见下方 write_entry 调用）
+                        f"crystallize 自 {sid[:12]} 提取的证据：{val}" + chr(10) + chr(10) + "> " + chr(0x23F3) + " candidate：未晋升。晋升用 memory_promote，淘汰直接 forget。",
+                        tags=["candidate", "topic:crystallized"])
             made += 1
     with processed.open("a", encoding="utf-8") as f:
         for sid in todo:
