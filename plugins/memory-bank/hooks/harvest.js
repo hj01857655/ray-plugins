@@ -62,15 +62,15 @@ if (pts.length) {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const name = `session-${today.replace(/-/g, '')}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const name = "session-" + String(payload.session_id || "unknown").replace(/^sess_/, "").slice(0, 12);
   const cwd = process.env.ZCODE_PROJECT_DIR || payload.cwd || process.cwd();
   const root = projectRoot(cwd);
   const file = path.join(root, `${name}.md`);
   try {
     fs.mkdirSync(root, { recursive: true });
-    if (!fs.existsSync(file)) {   // 同分钟重复触发只写一份
+    if (true) {   // 按会话一条：每轮 Stop 覆盖更新为最新摘要（v0.9.9）
       const hm = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-      const desc = `会话记录 ${today} ${hm}（SessionEnd 自动收割）`;
+      const desc = `会话记录 ${today}（Stop 每轮收割，按会话一条）`;
       const text = `---\nname: ${name}\ndescription: ${desc}\ntags: [session, auto]\nmetadata:\n  type: project\ncreated: ${today}\n---\n\n${pts.join('\n').slice(0, MAX_BODY)}\n`;
       fs.writeFileSync(file, text, 'utf8');
       // 索引行（与引擎 index_update 同格式：按文件名去重后追加）
